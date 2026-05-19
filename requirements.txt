@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+sqlalchemy
+yfinance
+httpx
+psycopg2-binary
+twelvedata
