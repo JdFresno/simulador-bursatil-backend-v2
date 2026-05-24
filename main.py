@@ -39,3 +39,7 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
 @app.get("/")
 def read_root():
     return {"message": "Servidor funcionando correctamente"}
+    
+    @app.get("/")
+async def read_root():
+    return {"status": "ok", "message": "Servidor de Simulación Activo"}
