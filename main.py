@@ -114,3 +114,28 @@ async def close_short(trade: TradeRequest, db: Session = Depends(get_db)):
     db.commit()
     
     return {"status": "success", "profit_loss": (pos.entry_price - current_price) * pos.quantity}
+    
+@app.post("/trade/long/open")
+async def open_long(trade: TradeRequest, db: Session = Depends(get_db)):
+    price = await market_service.get_live_price(trade.symbol)
+    if not price: raise HTTPException(status_code=404, detail="Símbolo no encontrado")
+
+    user = db.query(models.User).filter(models.User.id == trade.user_id).first()
+    total_cost = price * trade.quantity
+
+    if user.cash_balance < total_cost:
+        raise HTTPException(status_code=400, detail="Saldo insuficiente para comprar")
+
+    # En una COMPRA, restamos el dinero del saldo
+    user.cash_balance -= total_cost
+    
+    new_pos = models.Position(
+        user_id=user.id, symbol=trade.symbol.upper(),
+        quantity=trade.quantity, entry_price=price,
+        position_type="LONG", # Identificador de compra normal
+        margin_locked=0.0
+    )
+    
+    db.add(new_pos)
+    db.commit()
+    return {"status": "success", "price": price}
