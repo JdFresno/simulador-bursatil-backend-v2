@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 import models, database, market_service
 from pydantic import BaseModel
+from database import engine
 
 models.Base.metadata.create_all(bind=database.engine)
 app = FastAPI()
