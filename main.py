@@ -35,3 +35,7 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     positions = db.query(models.Position).filter(models.Position.user_id == user_id).all()
     # (Lógica de consolidación de precios actuales aquí)
     return {"cash_balance": user.cash_balance, "positions": positions}
+    
+@app.get("/")
+def read_root():
+    return {"message": "Servidor funcionando correctamente"}
