@@ -78,3 +78,39 @@ def startup_populate():
         db.add(user)
         db.commit()
     db.close()
+    
+    
+@app.post("/trade/short/close")
+async def close_short(trade: TradeRequest, db: Session = Depends(get_db)):
+    # 1. Buscar la posición abierta del usuario
+    pos = db.query(models.Position).filter(
+        models.Position.user_id == trade.user_id,
+        models.Position.symbol == trade.symbol.upper()
+    ).first()
+
+    if not pos:
+        raise HTTPException(status_code=404, detail="No tienes una posición abierta en este valor")
+
+    # 2. Obtener el precio actual de mercado (Yahoo/Twelve)
+    current_price = await market_service.get_live_price(trade.symbol)
+    if not current_price:
+        raise HTTPException(status_code=400, detail="No se pudo obtener el precio para cerrar")
+
+    # 3. Lógica financiera: Compramos las acciones para devolverlas
+    cost_to_cover = current_price * pos.quantity
+    user = db.query(models.User).filter(models.User.id == trade.user_id).first()
+    
+    # Restamos el dinero que nos cuesta recomprar las acciones
+    user.cash_balance -= cost_to_cover
+    
+    # 4. Registrar en el historial y eliminar la posición
+    history = models.TradeHistory(
+        user_id=user.id, symbol=trade.symbol.upper(),
+        op_type="COVER_SHORT", quantity=pos.quantity, price=current_price
+    )
+    
+    db.delete(pos)
+    db.add(history)
+    db.commit()
+    
+    return {"status": "success", "profit_loss": (pos.entry_price - current_price) * pos.quantity}
