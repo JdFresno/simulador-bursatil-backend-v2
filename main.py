@@ -31,10 +31,34 @@ async def open_short(trade: TradeRequest, db: Session = Depends(get_db)):
 
 @app.get("/portfolio/{user_id}")
 async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
+    # 1. Buscamos al usuario
     user = db.query(models.User).filter(models.User.id == user_id).first()
+    
+    # 2. SI NO EXISTE, LO CREAMOS AL VUELO
+    if user is None:
+        user = models.User(id=user_id, username=f"usuario_{user_id}", cash_balance=100000.0)
+        db.add(user)
+        db.commit()
+        db.refresh(user) # Recargamos para que tenga los datos frescos
+
+    # 3. Buscamos sus posiciones
     positions = db.query(models.Position).filter(models.Position.user_id == user_id).all()
-    # (Lógica de consolidación de precios actuales aquí)
-    return {"cash_balance": user.cash_balance, "positions": positions}
+    
+    portfolio_data = []
+    for p in positions:
+        curr_price = await market_service.get_live_price(p.symbol)
+        portfolio_data.append({
+            "symbol": p.symbol,
+            "quantity": p.quantity,
+            "entry_price": p.entry_price,
+            "current_price": curr_price,
+            "pnl": round((p.entry_price - curr_price) * p.quantity, 2) if curr_price else 0
+        })
+    
+    return {
+        "cash_balance": user.cash_balance, 
+        "positions": portfolio_data
+    }
     
 @app.get("/")
 def read_root():
