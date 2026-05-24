@@ -40,6 +40,17 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
 def read_root():
     return {"message": "Servidor funcionando correctamente"}
     
-    @app.get("/")
+@app.get("/")
 async def read_root():
     return {"status": "ok", "message": "Servidor de Simulación Activo"}
+    
+@app.on_event("startup")
+def startup_populate():
+    db = database.SessionLocal()
+    # Verifica si el usuario 1 existe, si no, lo crea
+    user = db.query(models.User).filter(models.User.id == 1).first()
+    if not user:
+        user = models.User(id=1, username="demo", cash_balance=100000.0)
+        db.add(user)
+        db.commit()
+    db.close()
