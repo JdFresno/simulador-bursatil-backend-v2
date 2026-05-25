@@ -48,6 +48,8 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     portfolio_data = []
     for p in positions:
         quote = await market_service.get_full_quote(p.symbol) # Llamada a la nueva función
+        history = await market_service.get_history_data(p.symbol)
+        
         if quote:
             portfolio_data.append({
                 "symbol": p.symbol,
@@ -56,7 +58,8 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
                 "current_price": quote["current_price"],
                 "high": quote["high"],
                 "low": quote["low"],
-                "position_type": p.position_type
+                "position_type": p.position_type,
+                "history": history
             })
     return {"cash_balance": user.cash_balance, "positions": portfolio_data}
     

@@ -29,9 +29,10 @@ async def get_full_quote(symbol: str):
         data = ticker.history(period="1d")
         if not data.empty:
             return {
-                "current_price": float(data['Close'].iloc[-1]),
-                "high": float(data['High'].iloc[-1]),
-                "low": float(data['Low'].iloc[-1])
+                # Usamos la función round(valor, 2) de Python
+                "current_price": round(float(data['Close'].iloc[-1]), 2),
+                "high": round(float(data['High'].iloc[-1]), 2),
+                "low": round(float(data['Low'].iloc[-1]), 2)
             }
     except:
         return None
@@ -76,3 +77,15 @@ async def search_stocks(query: str):
                 "price": price or 0.0
             })
         return results
+        
+async def get_history_data(symbol: str):
+    try:
+        ticker = yf.Ticker(symbol)
+        # Obtenemos datos de 1 día con intervalo de 15 minutos
+        df = ticker.history(period="1d", interval="15m")
+        if not df.empty:
+            # Convertimos la columna 'Close' en una lista de floats redondeados
+            return [round(float(price), 2) for price in df['Close'].tolist()]
+    except:
+        return []
+    return []
