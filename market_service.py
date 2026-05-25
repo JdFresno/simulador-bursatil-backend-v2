@@ -22,7 +22,19 @@ async def get_live_price(symbol: str):
     except: return None
     
     
-# En market_service.py
+async def get_full_quote(symbol: str):
+    try:
+        ticker = yf.Ticker(symbol)
+        # Obtenemos los datos del día de hoy
+        data = ticker.history(period="1d")
+        if not data.empty:
+            return {
+                "current_price": float(data['Close'].iloc[-1]),
+                "high": float(data['High'].iloc[-1]),
+                "low": float(data['Low'].iloc[-1])
+            }
+    except:
+        return None
 
 # Diccionario de mercados populares y sus sufijos en Yahoo Finance
 MARKETS = {

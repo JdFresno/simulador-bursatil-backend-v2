@@ -47,19 +47,18 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     
     portfolio_data = []
     for p in positions:
-        curr_price = await market_service.get_live_price(p.symbol)
-        portfolio_data.append({
-            "symbol": p.symbol,
-            "quantity": p.quantity,
-            "entry_price": p.entry_price,
-            "current_price": curr_price,
-            "pnl": round((p.entry_price - curr_price) * p.quantity, 2) if curr_price else 0
-        })
-    
-    return {
-        "cash_balance": user.cash_balance, 
-        "positions": portfolio_data
-    }
+        quote = await market_service.get_full_quote(p.symbol) # Llamada a la nueva función
+        if quote:
+            portfolio_data.append({
+                "symbol": p.symbol,
+                "quantity": p.quantity,
+                "entry_price": p.entry_price,
+                "current_price": quote["current_price"],
+                "high": quote["high"],
+                "low": quote["low"],
+                "position_type": p.position_type
+            })
+    return {"cash_balance": user.cash_balance, "positions": portfolio_data}
     
 @app.get("/")
 def read_root():
