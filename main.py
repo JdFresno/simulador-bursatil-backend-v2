@@ -149,3 +149,15 @@ def get_available_markets():
 @app.get("/stocks/list/{market}")
 async def get_market_stocks(market: str):
     return await market_service.get_stocks_by_market(market)
+    
+    
+MARKETS = {
+    "España (IBEX 35)": ["SAN.MC", "ITX.MC", "BBVA.MC", "TEF.MC"],
+    "USA (Tecnología)": ["AAPL", "TSLA", "NVDA", "MSFT"],
+    "Cripto": ["BTC-USD", "ETH-USD"]
+}
+
+@app.get("/stocks/markets")
+def get_available_markets():
+    # Esto devuelve ["España (IBEX 35)", "USA (Tecnología)", "Cripto"]
+    return list(MARKETS.keys())
