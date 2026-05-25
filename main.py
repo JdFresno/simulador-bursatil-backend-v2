@@ -161,3 +161,22 @@ MARKETS = {
 def get_available_markets():
     # Esto devuelve ["España (IBEX 35)", "USA (Tecnología)", "Cripto"]
     return list(MARKETS.keys())
+    
+    
+@app.get("/stocks/search")
+async def search(query: str):
+    return await market_service.search_stocks(query)
+
+@app.post("/favorites/add")
+def add_favorite(user_id: int, symbol: str, name: str, exchange: str, db: Session = Depends(get_db)):
+    # Evitar duplicados
+    exists = db.query(models.Favorite).filter(models.Favorite.user_id == user_id, models.Favorite.symbol == symbol).first()
+    if not exists:
+        new_fav = models.Favorite(user_id=user_id, symbol=symbol, name=name, exchange=exchange)
+        db.add(new_fav)
+        db.commit()
+    return {"status": "success"}
+
+@app.get("/favorites/{user_id}")
+def get_favorites(user_id: int, db: Session = Depends(get_db)):
+    return db.query(models.Favorite).filter(models.Favorite.user_id == user_id).all()

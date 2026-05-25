@@ -27,3 +27,11 @@ class TradeHistory(Base):
     quantity = Column(Integer)
     price = Column(Float)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    
+class Favorite(Base):
+    __tablename__ = "favorites"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True)
+    symbol = Column(String, index=True)
+    name = Column(String)
+    exchange = Column(String)

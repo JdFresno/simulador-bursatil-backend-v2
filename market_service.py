@@ -45,3 +45,22 @@ async def get_stocks_by_market(market_name: str):
                 "name": symbol.split('.')[0] # Nombre simplificado
             })
     return results
+    
+async def search_stocks(query: str):
+    url = f"https://api.twelvedata.com/symbol_search?symbol={query}&apikey={TWELVE_DATA_KEY}"
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url)
+        data = response.json()
+        
+        results = []
+        # Tomamos los primeros 10 resultados para no saturar
+        for item in data.get("data", [])[:10]:
+            # Obtenemos precio actual de cada resultado
+            price = await get_live_price(item["symbol"])
+            results.append({
+                "symbol": item["symbol"],
+                "name": item["instrument_name"],
+                "exchange": item["exchange"],
+                "price": price or 0.0
+            })
+        return results
