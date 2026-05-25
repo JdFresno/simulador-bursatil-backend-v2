@@ -140,3 +140,12 @@ async def open_long(trade: TradeRequest, db: Session = Depends(get_db)):
     db.add(new_pos)
     db.commit()
     return {"status": "success", "price": price}
+    
+    
+@app.get("/stocks/markets")
+def get_available_markets():
+    return list(market_service.MARKETS.keys())
+
+@app.get("/stocks/list/{market}")
+async def get_market_stocks(market: str):
+    return await market_service.get_stocks_by_market(market)

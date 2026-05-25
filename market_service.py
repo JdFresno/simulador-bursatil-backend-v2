@@ -20,3 +20,28 @@ async def get_live_price(symbol: str):
         data = ticker.history(period="1d")
         return float(data['Close'].iloc[-1])
     except: return None
+    
+    
+# En market_service.py
+
+# Diccionario de mercados populares y sus sufijos en Yahoo Finance
+MARKETS = {
+    "España (IBEX 35)": ["SAN.MC", "ITX.MC", "BBVA.MC", "TEF.MC", "IBE.MC", "REP.MC", "GRF.MC", "AMS.MC"],
+    "USA (Tecnología)": ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "NFLX"],
+    "Alemania (DAX)": ["BMW.DE", "DAI.DE", "SAP.DE", "ALV.DE", "BAYN.DE", "VOW3.DE"],
+    "Cripto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"]
+}
+
+async def get_stocks_by_market(market_name: str):
+    symbols = MARKETS.get(market_name, [])
+    results = []
+    
+    for symbol in symbols:
+        price = await get_live_price(symbol)
+        if price:
+            results.append({
+                "symbol": symbol,
+                "price": price,
+                "name": symbol.split('.')[0] # Nombre simplificado
+            })
+    return results
