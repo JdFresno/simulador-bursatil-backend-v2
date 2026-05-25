@@ -176,7 +176,28 @@ def add_favorite(user_id: int, symbol: str, name: str, exchange: str, db: Sessio
         db.add(new_fav)
         db.commit()
     return {"status": "success"}
-
+  
 @app.get("/favorites/{user_id}")
-def get_favorites(user_id: int, db: Session = Depends(get_db)):
-    return db.query(models.Favorite).filter(models.Favorite.user_id == user_id).all()
+async def get_favorites(user_id: int, db: Session = Depends(get_db)):
+    favs = db.query(models.Favorite).filter(models.Favorite.user_id == user_id).all()
+    results = []
+    for f in favs:
+        # Obtenemos el precio en vivo para cada favorito
+        price = await market_service.get_live_price(f.symbol)
+        results.append({
+            "id": f.id, # Necesario para poder borrarlo
+            "symbol": f.symbol,
+            "name": f.name,
+            "exchange": f.exchange,
+            "price": price or 0.0
+        })
+    return results
+
+@app.delete("/favorites/{fav_id}")
+def delete_favorite(fav_id: int, db: Session = Depends(get_db)):
+    fav = db.query(models.Favorite).filter(models.Favorite.id == fav_id).first()
+    if fav:
+        db.delete(fav)
+        db.commit()
+        return {"status": "deleted"}
+    raise HTTPException(status_code=404, detail="No encontrado")
