@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 import models, database, market_service
 from pydantic import BaseModel
 from database import engine
+import datetime
 
 models.Base.metadata.create_all(bind=database.engine)
 app = FastAPI()
