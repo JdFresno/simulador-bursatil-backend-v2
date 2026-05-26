@@ -207,4 +207,15 @@ def delete_favorite(fav_id: int, db: Session = Depends(get_db)):
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="No encontrado")
     
-    
+@app.get("/ping")
+async def ping():
+    """
+    Endpoint simple para verificar la salud del servidor.
+    Devuelve el estado y la hora actual del servidor.
+    """
+    return {
+        "status": "online",
+        "message": "pong",
+        "server_time": datetime.datetime.utcnow().isoformat(),
+        "version": "1.0.0"
+    }
