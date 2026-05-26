@@ -20,22 +20,6 @@ async def get_live_price(symbol: str):
         data = ticker.history(period="1d")
         return float(data['Close'].iloc[-1])
     except: return None
-    
-    
-async def get_full_quote(symbol: str):
-    try:
-        ticker = yf.Ticker(symbol)
-        # Obtenemos los datos del día de hoy
-        data = ticker.history(period="1d")
-        if not data.empty:
-            return {
-                # Usamos la función round(valor, 2) de Python
-                "current_price": round(float(data['Close'].iloc[-1]), 2),
-                "high": round(float(data['High'].iloc[-1]), 2),
-                "low": round(float(data['Low'].iloc[-1]), 2)
-            }
-    except:
-        return None
 
 # Diccionario de mercados populares y sus sufijos en Yahoo Finance
 MARKETS = {
@@ -54,7 +38,7 @@ async def get_stocks_by_market(market_name: str):
         if price:
             results.append({
                 "symbol": symbol,
-                "price": price,
+                "price": round(float(price), 2),
                 "name": symbol.split('.')[0] # Nombre simplificado
             })
     return results
@@ -89,3 +73,25 @@ async def get_history_data(symbol: str):
     except:
         return []
     return []
+    
+async def get_full_quote(symbol: str):
+    try:
+        ticker = yf.Ticker(symbol)
+        # Obtenemos la información general (esto contiene el nombre y la bolsa)
+        info = ticker.info
+        
+        # Obtenemos los datos de precio del día
+        data = ticker.history(period="1d")
+        
+        if not data.empty:
+            return {
+                "current_price": round(float(data['Close'].iloc[-1]), 2),
+                "high": round(float(data['High'].iloc[-1]), 2),
+                "low": round(float(data['Low'].iloc[-1]), 2),
+                "name": info.get("longName", symbol), # Nombre de la empresa
+                "exchange": info.get("exchange", "N/A"), # Siglas de la bolsa (NASDAQ, MC...)
+                "market_state": info.get("marketState", "CLOSED") # OPEN, CLOSED, PRE, POST...
+            }
+    except Exception as e:
+        print(f"Error en yfinance: {e}")
+        return None
