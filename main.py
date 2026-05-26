@@ -47,17 +47,20 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     
     portfolio_data = []
     for p in positions:
-        quote = await market_service.get_full_quote(p.symbol) # Llamada a la nueva función
+        details = await market_service.get_full_quote(p.symbol) # Llamada a la nueva función
         history = await market_service.get_history_data(p.symbol)
         
         if quote:
             portfolio_data.append({
                 "symbol": p.symbol,
+                "name": details["name"],
+                "exchange": details["exchange"],
+                "market_state": details["market_state"],
                 "quantity": p.quantity,
                 "entry_price": p.entry_price,
-                "current_price": quote["current_price"],
-                "high": quote["high"],
-                "low": quote["low"],
+                "current_price": details["current_price"],
+                "high": details["high"],
+                "low": details["low"],
                 "position_type": p.position_type,
                 "history": history
             })
@@ -203,3 +206,5 @@ def delete_favorite(fav_id: int, db: Session = Depends(get_db)):
         db.commit()
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="No encontrado")
+    
+    

@@ -81,7 +81,7 @@ async def get_full_quote(symbol: str):
         info = ticker.info
         
         # Obtenemos los datos de precio del día
-        data = ticker.history(period="1d")
+        data = ticker.history(period="1d", interval="15m")
         
         if not data.empty:
             return {
