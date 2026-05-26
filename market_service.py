@@ -1,7 +1,13 @@
 import os
 import httpx
 import yfinance as yf
+import time
 
+# --- CONFIGURACIÓN DE CACHÉ ---
+# Guardaremos los datos así: { "AAPL": {"timestamp": 1234567, "data": {...}}, ... }
+_stock_cache = {}
+# Tiempo en segundos para considerar los datos como "frescos" (120 seg = 2 min)
+CACHE_DURATION = 120 
 TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_KEY")
 
 async def get_live_price(symbol: str):
@@ -75,23 +81,76 @@ async def get_history_data(symbol: str):
     return []
     
 async def get_full_quote(symbol: str):
+    now = time.time()
+    symbol = symbol.upper()
+
+    # 1. Comprobar Caché
+    if symbol in _stock_cache:
+        entry = _stock_cache[symbol]
+        if now - entry["timestamp"] < CACHE_DURATION:
+            return entry["data"]
+
+    # 2. INTENTO CON TWELVE DATA (Fuente Principal)
+    if TWELVE_DATA_KEY:
+        try:
+            # Pedimos quote (precios y estado) y time_series (gráfica)
+            # Nota: Agrupamos para intentar ahorrar créditos
+            async with httpx.AsyncClient() as client:
+                # Obtenemos precio actual y metadatos
+                quote_url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_DATA_KEY}"
+                # Obtenemos serie histórica para la gráfica (intervalo 15m)
+                series_url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=20&apikey={TWELVE_DATA_KEY}"
+                
+                quote_resp = await client.get(quote_url)
+                series_resp = await client.get(series_url)
+                
+                q_data = quote_resp.json()
+                s_data = series_resp.json()
+
+                if "price" in q_data or "close" in q_data:
+                    # Mapeo de Twelve Data a nuestro formato
+                    res_data = {
+                        "current_price": round(float(q_data.get("close") or q_data.get("price")), 2),
+                        "high": round(float(q_data.get("high")), 2),
+                        "low": round(float(q_data.get("low")), 2),
+                        "name": q_data.get("name") or symbol,
+                        "exchange": q_data.get("exchange") or "N/A",
+                        "market_state": "OPEN" if q_data.get("is_market_open") else "CLOSED",
+                        "history": [round(float(x["close"]), 2) for x in s_data.get("values", [])][::-1] # Invertimos para que sea cronológico
+                    }
+                    save_to_cache(symbol, res_data)
+                    return res_data
+        except Exception as e:
+            print(f"Twelve Data falló o límite alcanzado para {symbol}, probando Yahoo...")
+
+    # 3. RESPALDO CON YAHOO FINANCE (Si Twelve Data falla o no hay clave)
+    return await get_yahoo_fallback(symbol)   
+
+async def get_yahoo_fallback(symbol: str):
     try:
         ticker = yf.Ticker(symbol)
-        # Obtenemos la información general (esto contiene el nombre y la bolsa)
+        # Pedimos el día actual con intervalo de 15m
+        hist = ticker.history(period="1d", interval="15m")
+        if hist.empty: return None
+        
         info = ticker.info
-        
-        # Obtenemos los datos de precio del día
-        data = ticker.history(period="1d", interval="15m")
-        
-        if not data.empty:
-            return {
-                "current_price": round(float(data['Close'].iloc[-1]), 2),
-                "high": round(float(data['High'].iloc[-1]), 2),
-                "low": round(float(data['Low'].iloc[-1]), 2),
-                "name": info.get("longName", symbol), # Nombre de la empresa
-                "exchange": info.get("exchange", "N/A"), # Siglas de la bolsa (NASDAQ, MC...)
-                "market_state": info.get("marketState", "CLOSED") # OPEN, CLOSED, PRE, POST...
-            }
+        res_data = {
+            "current_price": round(float(hist['Close'].iloc[-1]), 2),
+            "high": round(float(hist['High'].max()), 2),
+            "low": round(float(hist['Low'].min()), 2),
+            "name": info.get("longName") or symbol,
+            "exchange": info.get("exchange", "N/A"),
+            "market_state": info.get("marketState", "CLOSED"),
+            "history": [round(float(p), 2) for p in hist['Close'].tolist()]
+        }
+        save_to_cache(symbol, res_data)
+        return res_data
     except Exception as e:
-        print(f"Error en yfinance: {e}")
+        print(f"Yahoo Finance también falló para {symbol}: {e}")
         return None
+
+def save_to_cache(symbol, data):
+    _stock_cache[symbol] = {
+        "timestamp": time.time(),
+        "data": data
+    }
