@@ -50,7 +50,7 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
         details = await market_service.get_full_quote(p.symbol) # Llamada a la nueva función
         history = await market_service.get_history_data(p.symbol)
         
-        if quote:
+        if details:
             portfolio_data.append({
                 "symbol": p.symbol,
                 "name": details["name"],
