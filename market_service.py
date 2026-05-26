@@ -7,7 +7,7 @@ import time
 # Guardaremos los datos así: { "AAPL": {"timestamp": 1234567, "data": {...}}, ... }
 _stock_cache = {}
 # Tiempo en segundos para considerar los datos como "frescos" (120 seg = 2 min)
-CACHE_DURATION = 120 
+CACHE_DURATION = 600 
 TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_KEY")
 
 async def get_live_price(symbol: str):
