@@ -3,26 +3,29 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# 1. Obtener la URL de la variable de entorno
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./trading_app.db")
 
-# 2. Validación y limpieza de la URL
-if not SQLALCHEMY_DATABASE_URL:
-    # Si no hay variable (local), usamos SQLite
-    SQLALCHEMY_DATABASE_URL = "sqlite:///./trading_app.db"
-else:
-    # Si la URL empieza por postgres://, cambiar a postgresql:// (Requerido por SQLAlchemy)
-    if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
-        SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
+if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# 3. Configuración del motor (Engine)
-# Solo añadimos check_same_thread si es SQLite
-if "sqlite" in SQLALCHEMY_DATABASE_URL:
+# --- CONFIGURACIÓN PARA EVITAR CORTES DE CONEXIÓN ---
+if "postgresql" in SQLALCHEMY_DATABASE_URL:
     engine = create_engine(
-        SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+        SQLALCHEMY_DATABASE_URL,
+        # 1. Verifica la conexión antes de usarla (imprescindible para Neon)
+        pool_pre_ping=True,
+        # 2. Cierra y recrea conexiones cada 5 minutos (300 seg) 
+        # para que no lleguen al tiempo de espera de Neon/Render
+        pool_recycle=300,
+        # 3. Controla cuántas conexiones mantenemos abiertas
+        pool_size=5,
+        max_overflow=10
     )
 else:
-    engine = create_engine(SQLALCHEMY_DATABASE_URL)
+    engine = create_engine(
+        SQLALCHEMY_DATABASE_URL, 
+        connect_args={"check_same_thread": False}
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
