@@ -173,8 +173,7 @@ def is_market_open(exchange: models.Exchange):
     current_time = now.strftime("%H:%M")
     return exchange.open_time <= current_time <= exchange.close_time
     
-    
- def calculate_market_status(exchange: models.Exchange):
+def calculate_market_status(exchange: models.Exchange):
     """
     Calcula si una bolsa está abierta basándose SÓLO en la base de datos.
     """
