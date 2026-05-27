@@ -37,36 +37,35 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     # ... (lógica de creación de usuario si no existe) ...
 
     positions = db.query(models.Position).filter(models.Position.user_id == user_id).all()
+    
+    # 1. Extraer todos los símbolos únicos de la cartera
+    symbols_list = list(set([p.symbol for p in positions]))
+    
+    # 2. PETICIÓN ÚNICA AL MERCADO (Batch)
+    batch_market_data = await market_service.get_batch_quotes(symbols_list)
+    
     portfolio_data = []
-
     for p in positions:
-        # A. Obtener datos de precio (Yahoo/Twelve)
-        details = await market_service.get_full_quote(p.symbol)
+        # Recuperamos los datos del diccionario que devolvió el batch
+        data = batch_market_data.get(p.symbol)
         
-        # B. Obtener reglas de la bolsa desde NUESTRA Base de Datos
-        exchange_info = await market_service.get_exchange_by_symbol(db, p.symbol)
-        
-        # C. Calcular estado localmente
-        if exchange_info:
-            local_status = market_service.calculate_market_status(exchange_info)
-            exchange_name = exchange_info.name
-        else:
-            local_status = "UNKNOWN"
-            exchange_name = "N/A"
+        # Para el Nombre y la Bolsa, usamos los metadatos (podemos seguir usando caché para esto)
+        # ya que el Batch solo da precios, no nombres largos de empresa.
+        metadata = await market_service.get_full_quote(p.symbol) 
 
-        if details:
+        if data and metadata:
             portfolio_data.append({
                 "symbol": p.symbol,
-                "name": details.get("name", p.symbol),
-                "exchange": exchange_name,
-                "market_state": local_status, # <--- Estado calculado por nosotros
+                "name": metadata.get("name", p.symbol),
+                "exchange": metadata.get("exchange", "N/A"),
+                "market_state": metadata.get("market_state", "CLOSED"),
                 "quantity": p.quantity,
                 "entry_price": p.entry_price,
-                "current_price": details["current_price"],
-                "high": details["high"],
-                "low": details["low"],
+                "current_price": data["current_price"],
+                "high": data["high"],
+                "low": data["low"],
                 "position_type": p.position_type,
-                "history": details.get("history", [])
+                "history": data["history"]
             })
             
     return {"cash_balance": round(user.cash_balance, 2), "positions": portfolio_data}

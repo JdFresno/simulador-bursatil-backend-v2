@@ -208,3 +208,55 @@ async def get_exchange_by_symbol(db, symbol: str):
         suffix = "" # NYSE / NASDAQ no suelen llevar sufijo en nuestra lógica
         
     return db.query(models.Exchange).filter(models.Exchange.symbol_suffix == suffix).first()
+    
+    
+    
+async def get_batch_quotes(symbols: list):
+    """
+    Obtiene precios e historia de una lista de símbolos en UNA SOLA petición.
+    """
+    if not symbols:
+        return {}
+
+    try:
+        # Convertimos la lista ["AAPL", "TSLA"] en un string "AAPL TSLA"
+        symbols_str = " ".join(symbols)
+        
+        # Descargamos datos de 1 día con intervalo de 15m para todos los tickers
+        # group_by='ticker' es clave para organizar los datos por acción
+        df = yf.download(
+            tickers=symbols_str, 
+            period="1d", 
+            interval="15m", 
+            group_by='ticker',
+            progress=False
+        )
+
+        results = {}
+        for symbol in symbols:
+            # Extraemos los datos de cada símbolo del DataFrame global
+            try:
+                # Si es un solo símbolo, yfinance devuelve una estructura distinta
+                ticker_df = df[symbol] if len(symbols) > 1 else df
+                
+                if not ticker_df.empty:
+                    # Filtramos filas sin datos (NaN)
+                    ticker_df = ticker_df.dropna()
+                    
+                    last_price = float(ticker_df['Close'].iloc[-1])
+                    high_day = float(ticker_df['High'].max())
+                    low_day = float(ticker_df['Low'].min())
+                    history = [round(float(p), 2) for p in ticker_df['Close'].tolist()]
+
+                    results[symbol] = {
+                        "current_price": round(last_price, 2),
+                        "high": round(high_day, 2),
+                        "low": round(low_day, 2),
+                        "history": history
+                    }
+            except:
+                continue
+        return results
+    except Exception as e:
+        print(f"Error en Batch Download: {e}")
+        return {}
