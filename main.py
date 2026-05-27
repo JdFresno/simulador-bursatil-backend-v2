@@ -33,39 +33,43 @@ async def open_short(trade: TradeRequest, db: Session = Depends(get_db)):
 
 @app.get("/portfolio/{user_id}")
 async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
-    # 1. Buscamos al usuario
     user = db.query(models.User).filter(models.User.id == user_id).first()
-    
-    # 2. SI NO EXISTE, LO CREAMOS AL VUELO
-    if user is None:
-        user = models.User(id=user_id, username=f"usuario_{user_id}", cash_balance=100000.0)
-        db.add(user)
-        db.commit()
-        db.refresh(user) # Recargamos para que tenga los datos frescos
+    # ... (lógica de creación de usuario si no existe) ...
 
-    # 3. Buscamos sus posiciones
     positions = db.query(models.Position).filter(models.Position.user_id == user_id).all()
-    
     portfolio_data = []
+
     for p in positions:
-        details = await market_service.get_full_quote(p.symbol) # Llamada a la nueva función
-        history = await market_service.get_history_data(p.symbol)
+        # A. Obtener datos de precio (Yahoo/Twelve)
+        details = await market_service.get_full_quote(p.symbol)
         
+        # B. Obtener reglas de la bolsa desde NUESTRA Base de Datos
+        exchange_info = await market_service.get_exchange_by_symbol(db, p.symbol)
+        
+        # C. Calcular estado localmente
+        if exchange_info:
+            local_status = market_service.calculate_market_status(exchange_info)
+            exchange_name = exchange_info.name
+        else:
+            local_status = "UNKNOWN"
+            exchange_name = "N/A"
+
         if details:
             portfolio_data.append({
                 "symbol": p.symbol,
-                "name": details["name"],
-                "exchange": details["exchange"],
-                "market_state": details["market_state"],
+                "name": details.get("name", p.symbol),
+                "exchange": exchange_name,
+                "market_state": local_status, # <--- Estado calculado por nosotros
                 "quantity": p.quantity,
                 "entry_price": p.entry_price,
                 "current_price": details["current_price"],
                 "high": details["high"],
                 "low": details["low"],
                 "position_type": p.position_type,
-                "history": history
+                "history": details.get("history", [])
             })
-    return {"cash_balance": user.cash_balance, "positions": portfolio_data}
+            
+    return {"cash_balance": round(user.cash_balance, 2), "positions": portfolio_data}
     
 @app.get("/")
 def read_root():
@@ -220,3 +224,50 @@ async def ping():
         "server_time": datetime.datetime.utcnow().isoformat(),
         "version": "1.0.0"
     }
+    
+@app.on_event("startup")
+def startup_populate():
+    db = database.SessionLocal()
+    try:
+        # 1. Crear usuario demo si no existe (ya lo teníamos)
+        if not db.query(models.User).filter(models.User.id == 1).first():
+            db.add(models.User(id=1, username="inversor_demo", cash_balance=100000.0))
+
+        # 2. Crear bolsas de valores si la tabla está vacía
+        if not db.query(models.Exchange).first():
+            markets = [
+                models.Exchange(
+                    name="Bolsa de Madrid", country="España", symbol_suffix=".MC",
+                    open_time="09:00", close_time="17:30", operating_days="0,1,2,3,4",
+                    timezone="Europe/Madrid"
+                ),
+                models.Exchange(
+                    name="NYSE", country="USA", symbol_suffix="",
+                    open_time="09:30", close_time="16:00", operating_days="0,1,2,3,4",
+                    timezone="America/New_York"
+                ),
+                models.Exchange(
+                    name="XETRA", country="Alemania", symbol_suffix=".DE",
+                    open_time="09:00", close_time="17:30", operating_days="0,1,2,3,4",
+                    timezone="Europe/Berlin"
+                )
+            ]
+            db.add_all(markets)
+            db.commit()
+    finally:
+        db.close()
+        
+@app.get("/stocks/status/{exchange_id}")
+async def get_status(exchange_id: int, db: Session = Depends(get_db)):
+    exchange = db.query(models.Exchange).filter(models.Exchange.id == exchange_id).first()
+    if not exchange:
+        return {"error": "Bolsa no encontrada"}
+    
+    # Llamamos a la función que acabamos de crear en el otro fichero
+    abierto = market_service.is_market_open(exchange)
+    
+    return {
+        "exchange": exchange.name,
+        "is_open": abierto
+    }
+

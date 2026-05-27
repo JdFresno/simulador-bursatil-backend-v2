@@ -2,6 +2,9 @@ import os
 import httpx
 import yfinance as yf
 import time
+from datetime import datetime
+import pytz
+
 
 # --- CONFIGURACIÓN DE CACHÉ ---
 # Guardaremos los datos así: { "AAPL": {"timestamp": 1234567, "data": {...}}, ... }
@@ -154,3 +157,54 @@ def save_to_cache(symbol, data):
         "timestamp": time.time(),
         "data": data
     }
+    
+
+def is_market_open(exchange: models.Exchange):
+    # Obtener la hora actual en la zona horaria de esa bolsa
+    tz = pytz.timezone(exchange.timezone)
+    now = datetime.now(tz)
+    
+    # Verificar si hoy es día operativo (ej: "0,1,2,3,4")
+    current_day = str(now.weekday())
+    if current_day not in exchange.operating_days.split(","):
+        return False
+        
+    # Verificar si estamos dentro del horario (HH:MM)
+    current_time = now.strftime("%H:%M")
+    return exchange.open_time <= current_time <= exchange.close_time
+    
+    
+ def calculate_market_status(exchange: models.Exchange):
+    """
+    Calcula si una bolsa está abierta basándose SÓLO en la base de datos.
+    """
+    try:
+        # 1. Ajustar a la zona horaria de la bolsa
+        tz = pytz.timezone(exchange.timezone)
+        now_in_tz = datetime.now(tz)
+        
+        # 2. Verificar día de la semana (0=Lunes, 4=Viernes)
+        current_day = str(now_in_tz.weekday())
+        if current_day not in exchange.operating_days.split(","):
+            return "CLOSED"
+
+        # 3. Verificar hora (HH:MM)
+        current_time = now_in_tz.strftime("%H:%M")
+        if exchange.open_time <= current_time <= exchange.close_time:
+            return "OPEN"
+        
+        return "CLOSED"
+    except:
+        return "CLOSED"
+
+async def get_exchange_by_symbol(db, symbol: str):
+    """
+    Identifica a qué bolsa pertenece un símbolo por su sufijo.
+    Ej: SAN.MC -> Bolsa de Madrid (.MC)
+    """
+    if "." in symbol:
+        suffix = "." + symbol.split(".")[-1]
+    else:
+        suffix = "" # NYSE / NASDAQ no suelen llevar sufijo en nuestra lógica
+        
+    return db.query(models.Exchange).filter(models.Exchange.symbol_suffix == suffix).first()

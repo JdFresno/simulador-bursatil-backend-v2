@@ -5,3 +5,4 @@ yfinance
 httpx
 psycopg2-binary
 twelvedata
+pytz
