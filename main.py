@@ -72,15 +72,24 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
                 p.reference_price = p.entry_price
                 updated_db = True
 
-            if p.position_type == "LONG":
+            if p.position_type == "LARGO":
                 if current > p.reference_price:
                     p.reference_price = current
                     updated_db = True
-            elif p.position_type == "SHORT":
+            elif p.position_type == "CORTO":
                 if current < p.reference_price:
                     p.reference_price = current
                     updated_db = True
             # -------------------------------------
+            
+            alert_triggered = False
+            if p.position_type == "LARGO":
+                limit_price = p.reference_price * (1 - (p.trailing_stop_percent / 100))
+                if current <= limit_price: alert_triggered = True
+            else:
+                limit_price = p.reference_price * (1 + (p.trailing_stop_percent / 100))
+                if current >= limit_price: alert_triggered = True
+
             
             # --- CÁLCULO LOCAL DEL ESTADO DE LA BOLSA ---
             suffix = "." + p.symbol.split(".")[-1] if "." in p.symbol else ""
@@ -99,6 +108,9 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
                 "current_price": current,
                 "high": data["high"],
                 "low": data["low"],
+                "trailing_stop_percent": p.trailing_stop_percent,
+                "stop_price": round(limit_price, 2),
+                "is_alert_active": alert_triggered, # <-- NUEVO CAMPO
                 "position_type": p.position_type,
                 "history": data["history"]
             })

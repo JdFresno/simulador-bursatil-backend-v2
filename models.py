@@ -16,6 +16,7 @@ class Position(Base):
     quantity = Column(Integer)
     entry_price = Column(Float)
     reference_price = Column(Float) # <-- NUEVO CAMPO
+    trailing_stop_percent = Column(Float, default=5.0) # Por defecto un 5%
     position_type = Column(String, default="SHORT")
     margin_locked = Column(Float)
 
