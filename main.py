@@ -72,18 +72,18 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
                 p.reference_price = p.entry_price
                 updated_db = True
 
-            if p.position_type == "LARGO":
+            if p.position_type in ["LARGO", "LONG"]:
                 if current > p.reference_price:
                     p.reference_price = current
                     updated_db = True
-            elif p.position_type == "CORTO":
+            elif p.position_type in ["CORTO", "SHORT"]:
                 if current < p.reference_price:
                     p.reference_price = current
                     updated_db = True
             # -------------------------------------
             
             alert_triggered = False
-            if p.position_type == "LARGO":
+            if p.position_type in ["LARGO", "LONG"]:
                 limit_price = p.reference_price * (1 - (p.trailing_stop_percent / 100))
                 if current <= limit_price: alert_triggered = True
             else:
