@@ -33,56 +33,70 @@ async def open_short(trade: TradeRequest, db: Session = Depends(get_db)):
 
 @app.get("/portfolio/{user_id}")
 async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
+    # 1. Buscar o crear usuario
     user = db.query(models.User).filter(models.User.id == user_id).first()
-    # ... (lógica de creación de usuario si no existe) ...
+    if user is None:
+        user = models.User(id=user_id, username=f"usuario_{user_id}", cash_balance=100000.0)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
 
+    # 2. Obtener posiciones del usuario
     positions = db.query(models.Position).filter(models.Position.user_id == user_id).all()
     
-    # 1. Extraer todos los símbolos únicos de la cartera
+    # 3. PETICIÓN ÚNICA AL MERCADO (Batch) para todos los precios y gráficas
     symbols_list = list(set([p.symbol for p in positions]))
-    
-    # 2. PETICIÓN ÚNICA AL MERCADO (Batch)
     batch_market_data = await market_service.get_batch_quotes(symbols_list)
     
+    # 4. PRE-CARGAR LAS BOLSAS para calcular el estado localmente sin peticiones extra
+    all_exchanges = db.query(models.Exchange).all()
+    # Creamos un diccionario para buscar rápido: {".MC": objeto_bolsa, "": objeto_bolsa_ny}
+    exchange_map = {ex.symbol_suffix: ex for ex in all_exchanges}
+
     portfolio_data = []
-    updated_db = False
+    updated_db = False 
     
     for p in positions:
-        # Recuperamos los datos del diccionario que devolvió el batch
+        # Recuperamos los datos del batch de Yahoo (precios y historia)
         data = batch_market_data.get(p.symbol)
-        # Para el Nombre y la Bolsa, usamos los metadatos (podemos seguir usando caché para esto)
-        # ya que el Batch solo da precios, no nombres largos de empresa.
-        metadata = await market_service.get_full_quote(p.symbol) 
+        
+        # OBTENCIÓN DE METADATOS PROTEGIDA (Usa la caché que definimos antes)
+        # Esto evita las peticiones individuales pesadas a Yahoo
+        metadata = await market_service.get_metadata_safe(p.symbol) 
 
-        if data and metadata:
+        if data:
             current = data["current_price"]
+
             # --- LÓGICA DE REFERENCIA DINÁMICA ---
-            # Si por alguna razón la referencia es nula o 0, la igualamos al precio de entrada
             if not p.reference_price or p.reference_price == 0:
                 p.reference_price = p.entry_price
                 updated_db = True
 
             if p.position_type == "LONG":
-                # En COMPRA: La referencia guarda el precio MÁXIMO alcanzado
                 if current > p.reference_price:
                     p.reference_price = current
                     updated_db = True
             elif p.position_type == "SHORT":
-                # En CORTO: La referencia guarda el precio MÍNIMO alcanzado
                 if current < p.reference_price:
                     p.reference_price = current
                     updated_db = True
             # -------------------------------------
             
+            # --- CÁLCULO LOCAL DEL ESTADO DE LA BOLSA ---
+            suffix = "." + p.symbol.split(".")[-1] if "." in p.symbol else ""
+            ex_info = exchange_map.get(suffix)
+            local_status = market_service.calculate_market_status(ex_info) if ex_info else "UNKNOWN"
+            # --------------------------------------------
+
             portfolio_data.append({
                 "symbol": p.symbol,
                 "name": metadata.get("name", p.symbol),
                 "exchange": metadata.get("exchange", "N/A"),
-                "market_state": metadata.get("market_state", "CLOSED"),
+                "market_state": local_status, # <--- 100% calculado en su servidor
                 "quantity": p.quantity,
                 "entry_price": p.entry_price,
-                "reference_price": p.reference_price, # <--- Nuevo dato para Android
-                "current_price": data["current_price"],
+                "reference_price": p.reference_price,
+                "current_price": current,
                 "high": data["high"],
                 "low": data["low"],
                 "position_type": p.position_type,
@@ -93,6 +107,7 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
         db.commit()    
             
     return {"cash_balance": round(user.cash_balance, 2), "positions": portfolio_data}
+
     
 @app.get("/")
 def read_root():
@@ -294,4 +309,7 @@ async def get_status(exchange_id: int, db: Session = Depends(get_db)):
         "exchange": exchange.name,
         "is_open": abierto
     }
+    
+    
+
 

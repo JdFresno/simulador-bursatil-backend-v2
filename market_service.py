@@ -13,6 +13,8 @@ _stock_cache = {}
 # Tiempo en segundos para considerar los datos como "frescos" (120 seg = 2 min)
 CACHE_DURATION = 600 
 TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_KEY")
+# Diccionario para nombres y bolsas (Caché de larga duración)
+_metadata_cache = {}
 
 async def get_live_price(symbol: str):
     if TWELVE_DATA_KEY:
@@ -260,3 +262,43 @@ async def get_batch_quotes(symbols: list):
     except Exception as e:
         print(f"Error en Batch Download: {e}")
         return {}
+        
+        
+async def get_metadata_safe(symbol: str):
+    """
+    Obtiene el nombre y la bolsa intentando NO molestar a Yahoo Finance.
+    """
+    symbol = symbol.upper()
+    
+    # 1. Si ya lo conocemos de esta sesión, lo devolvemos al instante
+    if symbol in _metadata_cache:
+        return _metadata_cache[symbol]
+
+    # 2. Si no, intentamos con Twelve Data (que es más generoso con los nombres)
+    if TWELVE_DATA_KEY:
+        try:
+            url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_DATA_KEY}"
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=3)
+                if resp.status_code == 200:
+                    d = resp.json()
+                    meta = {
+                        "name": d.get("name", symbol),
+                        "exchange": d.get("exchange", "N/A")
+                    }
+                    _metadata_cache[symbol] = meta
+                    return meta
+        except: pass
+
+    # 3. Solo si todo lo anterior falla, vamos a Yahoo, pero con mucho cuidado
+    try:
+        t = yf.Ticker(symbol)
+        # Usamos fast_info si está disponible para no disparar el bloqueo
+        meta = {
+            "name": t.info.get("longName", symbol),
+            "exchange": t.info.get("exchange", "N/A")
+        }
+        _metadata_cache[symbol] = meta
+        return meta
+    except:
+        return {"name": symbol, "exchange": "N/A"}
