@@ -44,82 +44,97 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     # 2. Obtener posiciones del usuario
     positions = db.query(models.Position).filter(models.Position.user_id == user_id).all()
     
-    # 3. PETICIÓN ÚNICA AL MERCADO (Batch) para todos los precios y gráficas
+    # 3. Preparar símbolos y obtener datos en Batch
     symbols_list = list(set([p.symbol for p in positions]))
     batch_market_data = await market_service.get_batch_quotes(symbols_list)
     
-    # 4. PRE-CARGAR LAS BOLSAS para calcular el estado localmente sin peticiones extra
+    # 4. Pre-cargar bolsas para estado local
     all_exchanges = db.query(models.Exchange).all()
-    # Creamos un diccionario para buscar rápido: {".MC": objeto_bolsa, "": objeto_bolsa_ny}
     exchange_map = {ex.symbol_suffix: ex for ex in all_exchanges}
+    
+    # --- VARIABLES PARA CÁLCULO DE SALDOS ---
+    total_pnl = 0.0
+    positive_pnl_only = 0.0
+    negative_pnl_only = 0.0
 
     portfolio_data = []
     updated_db = False 
     
     for p in positions:
-        # Recuperamos los datos del batch de Yahoo (precios y historia)
         data = batch_market_data.get(p.symbol)
-        
-        # OBTENCIÓN DE METADATOS PROTEGIDA (Usa la caché que definimos antes)
-        # Esto evita las peticiones individuales pesadas a Yahoo
         metadata = await market_service.get_metadata_safe(p.symbol) 
 
         if data:
             current = data["current_price"]
+            tipo_limpio = str(p.position_type).strip().upper()
+
+            # --- CÁLCULO DE PNL INDIVIDUAL ---
+            if tipo_limpio in ["LARGO", "LONG"]:
+                pnl_individual = (current - p.entry_price) * p.quantity
+            else: # CORTO / SHORT
+                pnl_individual = (p.entry_price - current) * p.quantity
+
+            # Sumamos a las variables de agregación
+            total_pnl += pnl_individual
+            if pnl_individual > 0:
+                positive_pnl_only += pnl_individual
+            else:
+                negative_pnl_only += pnl_individual
 
             # --- LÓGICA DE REFERENCIA DINÁMICA ---
             if not p.reference_price or p.reference_price == 0:
                 p.reference_price = p.entry_price
                 updated_db = True
 
-            if p.position_type in ["LARGO", "LONG"]:
+            if tipo_limpio in ["LARGO", "LONG"]:
                 if current > p.reference_price:
                     p.reference_price = current
                     updated_db = True
-            elif p.position_type in ["CORTO", "SHORT"]:
+                limit_price = p.reference_price * (1 - (p.trailing_stop_percent / 100))
+                alert_triggered = current <= limit_price
+            else: # CORTO / SHORT
                 if current < p.reference_price:
                     p.reference_price = current
                     updated_db = True
-            # -------------------------------------
-            
-            alert_triggered = False
-            if p.position_type in ["LARGO", "LONG"]:
-                limit_price = p.reference_price * (1 - (p.trailing_stop_percent / 100))
-                if current <= limit_price: alert_triggered = True
-            else:
                 limit_price = p.reference_price * (1 + (p.trailing_stop_percent / 100))
-                if current >= limit_price: alert_triggered = True
-
-            print(limit_price)
+                alert_triggered = current >= limit_price
             
-            # --- CÁLCULO LOCAL DEL ESTADO DE LA BOLSA ---
+            # --- ESTADO DE BOLSA ---
             suffix = "." + p.symbol.split(".")[-1] if "." in p.symbol else ""
             ex_info = exchange_map.get(suffix)
             local_status = market_service.calculate_market_status(ex_info) if ex_info else "UNKNOWN"
-            # --------------------------------------------
 
             portfolio_data.append({
                 "symbol": p.symbol,
                 "name": metadata.get("name", p.symbol),
                 "exchange": metadata.get("exchange", "N/A"),
-                "market_state": local_status, # <--- 100% calculado en su servidor
+                "market_state": local_status,
                 "quantity": p.quantity,
                 "entry_price": p.entry_price,
                 "reference_price": p.reference_price,
                 "current_price": current,
                 "high": data["high"],
                 "low": data["low"],
+                "pnl": round(pnl_individual, 2), # Añadimos el PnL individual por si Android lo necesita
                 "trailing_stop_percent": p.trailing_stop_percent,
                 "stop_price": round(limit_price, 2),
-                "is_alert_active": alert_triggered, # <-- NUEVO CAMPO
-                "position_type": p.position_type,
+                "is_alert_active": alert_triggered,
+                "position_type": tipo_limpio,
                 "history": data["history"]
             })
             
     if updated_db:
         db.commit()    
             
-    return {"cash_balance": round(user.cash_balance, 2), "positions": portfolio_data}
+    # --- CONSTRUCCIÓN DE LA RESPUESTA CON LOS 4 SALDOS ---
+    cash = user.cash_balance
+    return {
+        "cash_balance": round(cash, 2),                         # Saldo Disponible
+        "total_balance": round(cash + total_pnl, 2),           # Saldo Total (Liquidación completa)
+        "positive_balance": round(cash + positive_pnl_only, 2), # Saldo si solo cerrara ganadoras
+        "negative_balance": round(cash + negative_pnl_only, 2), # Saldo si solo cerrara perdedoras
+        "positions": portfolio_data
+    }
 
     
 @app.get("/")
