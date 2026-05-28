@@ -90,6 +90,7 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
                 limit_price = p.reference_price * (1 + (p.trailing_stop_percent / 100))
                 if current >= limit_price: alert_triggered = True
 
+            print(limit_price)
             
             # --- CÁLCULO LOCAL DEL ESTADO DE LA BOLSA ---
             suffix = "." + p.symbol.split(".")[-1] if "." in p.symbol else ""
