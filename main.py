@@ -45,6 +45,8 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     batch_market_data = await market_service.get_batch_quotes(symbols_list)
     
     portfolio_data = []
+    updated_db = False
+    
     for p in positions:
         # Recuperamos los datos del diccionario que devolvió el batch
         data = batch_market_data.get(p.symbol)
@@ -54,6 +56,25 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
         metadata = await market_service.get_full_quote(p.symbol) 
 
         if data and metadata:
+            
+            # --- LÓGICA DE REFERENCIA DINÁMICA ---
+            # Si por alguna razón la referencia es nula o 0, la igualamos al precio de entrada
+            if not p.reference_price or p.reference_price == 0:
+                p.reference_price = p.entry_price
+                updated_db = True
+
+            if p.position_type == "LONG":
+                # En COMPRA: La referencia guarda el precio MÁXIMO alcanzado
+                if current > p.reference_price:
+                    p.reference_price = current
+                    updated_db = True
+            elif p.position_type == "SHORT":
+                # En CORTO: La referencia guarda el precio MÍNIMO alcanzado
+                if current < p.reference_price:
+                    p.reference_price = current
+                    updated_db = True
+            # -------------------------------------
+            
             portfolio_data.append({
                 "symbol": p.symbol,
                 "name": metadata.get("name", p.symbol),
@@ -61,12 +82,16 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
                 "market_state": metadata.get("market_state", "CLOSED"),
                 "quantity": p.quantity,
                 "entry_price": p.entry_price,
+                "reference_price": p.reference_price, # <--- Nuevo dato para Android
                 "current_price": data["current_price"],
                 "high": data["high"],
                 "low": data["low"],
                 "position_type": p.position_type,
                 "history": data["history"]
             })
+            
+    if updated_db:
+        db.commit()    
             
     return {"cash_balance": round(user.cash_balance, 2), "positions": portfolio_data}
     
@@ -142,6 +167,7 @@ async def open_long(trade: TradeRequest, db: Session = Depends(get_db)):
     new_pos = models.Position(
         user_id=user.id, symbol=trade.symbol.upper(),
         quantity=trade.quantity, entry_price=price,
+        reference_price=price, # Se inicializa igual al de entrada
         position_type="LONG", # Identificador de compra normal
         margin_locked=0.0
     )

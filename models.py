@@ -15,6 +15,7 @@ class Position(Base):
     symbol = Column(String)
     quantity = Column(Integer)
     entry_price = Column(Float)
+    reference_price = Column(Float) # <-- NUEVO CAMPO
     position_type = Column(String, default="SHORT")
     margin_locked = Column(Float)
 
