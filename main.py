@@ -50,13 +50,12 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     for p in positions:
         # Recuperamos los datos del diccionario que devolvió el batch
         data = batch_market_data.get(p.symbol)
-        
         # Para el Nombre y la Bolsa, usamos los metadatos (podemos seguir usando caché para esto)
         # ya que el Batch solo da precios, no nombres largos de empresa.
         metadata = await market_service.get_full_quote(p.symbol) 
 
         if data and metadata:
-            
+            current = data["current_price"]
             # --- LÓGICA DE REFERENCIA DINÁMICA ---
             # Si por alguna razón la referencia es nula o 0, la igualamos al precio de entrada
             if not p.reference_price or p.reference_price == 0:
