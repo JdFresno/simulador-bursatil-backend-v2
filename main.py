@@ -50,6 +50,12 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     symbols_list = list(set([p.symbol for p in positions]))
     batch_market_data = await market_service.get_batch_quotes(symbols_list)
     
+    # VARIABLES DE AGREGACIÓN SOLICITADAS
+    total_invertido = 0.0
+    ganancias_acumuladas = 0.0
+    perdidas_acumuladas = 0.0
+    valor_actual_total_posiciones = 0.0
+
     # 4. Pre-cargar bolsas para estado local
     all_exchanges = db.query(models.Exchange).all()
     exchange_map = {ex.symbol_suffix: ex for ex in all_exchanges}
@@ -70,18 +76,27 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
             current = data["current_price"]
             tipo_limpio = str(p.position_type).strip().upper()
 
+            principal = p.entry_price * p.quantity
+            total_invertido += principal
+
             # --- CÁLCULO DE PNL INDIVIDUAL ---
             if tipo_limpio in ["LARGO", "LONG"]:
                 pnl_individual = (current - p.entry_price) * p.quantity
+                valor_posicion = current * p.quantity
             else: # CORTO / SHORT
                 pnl_individual = (p.entry_price - current) * p.quantity
+                valor_posicion = - (current * p.quantity) 
+
+            valor_actual_total_posiciones += valor_posicion
 
             # Sumamos a las variables de agregación
             total_pnl += pnl_individual
             if pnl_individual > 0:
                 positive_pnl_only += pnl_individual
+                ganancias_acumuladas += pnl_individual
             else:
                 negative_pnl_only += pnl_individual
+                perdidas_acumuladas += pnl_individual
 
             # --- LÓGICA DE REFERENCIA DINÁMICA ---
             if not p.reference_price or p.reference_price == 0:
@@ -131,14 +146,14 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     # --- CONSTRUCCIÓN DE LA RESPUESTA CON LOS 4 SALDOS ---
     cash = user.cash_balance
     return {
-        "cash_balance": round(cash, 2),                         # Saldo Disponible
-        "total_balance": round(cash + total_pnl, 2),           # Saldo Total (Liquidación completa)
-        "positive_balance": round(cash + positive_pnl_only, 2), # Saldo si solo cerrara ganadoras
-        "negative_balance": round(cash + negative_pnl_only, 2), # Saldo si solo cerrara perdedoras
+        "cash_balance": round(cash, 2),                         # 1. Dinero disponible (PRIORIDAD)
+        "total_invested": round(total_invertido, 2),            # 2. Total Invertido
+        "invested_plus_gains": round(total_invertido + ganancias_acumuladas, 2),
+        "invested_plus_losses": round(total_invertido + perdidas_acumuladas, 2),
+        "total_liquidation": round(cash + valor_actual_total_posiciones, 2), # Patrimonio Neto
         "positions": portfolio_data
     }
-
-    
+        
 @app.get("/")
 def read_root():
     return {"message": "Servidor funcionando correctamente"}
