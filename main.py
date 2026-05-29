@@ -4,6 +4,8 @@ import models, database, market_service
 from pydantic import BaseModel
 from database import engine
 import datetime
+import asyncio
+from contextlib import asynccontextmanager
 
 models.Base.metadata.create_all(bind=database.engine)
 app = FastAPI()
@@ -337,7 +339,66 @@ async def get_status(exchange_id: int, db: Session = Depends(get_db)):
         "exchange": exchange.name,
         "is_open": abierto
     }
-    
-    
 
+# --- FUNCIÓN DE TAREA EN SEGUNDO PLANO ---
+async def scheduled_market_refresh():
+    """
+    Bucle infinito que recorre todas las posiciones de la base de datos
+    y actualiza sus valores cada hora.
+    """
+    while True:
+        try:
+            # Esperar 1 hora (3600 segundos)
+            # Nota: Al arrancar, espera primero la hora. 
+            # Si quiere que refresque nada más encender, mueva el sleep al final.
+            await asyncio.sleep(3600) 
+            
+            print("INFO: Iniciando refresco automático por hora...")
+            db = database.SessionLocal()
+            
+            # 1. Obtener todas las posiciones de TODOS los usuarios
+            all_positions = db.query(models.Position).all()
+            if not all_positions:
+                db.close()
+                continue
 
+            # 2. Obtener precios en Batch (para no saturar Yahoo)
+            symbols = list(set([p.symbol for p in all_positions]))
+            batch_data = await market_service.get_batch_quotes(symbols)
+
+            updated = False
+            for p in all_positions:
+                data = batch_data.get(p.symbol)
+                if data:
+                    current = data["current_price"]
+                    tipo = str(p.position_type).strip().upper()
+
+                    # 3. Actualizar Referencia (Peak/Trough)
+                    if tipo in ["LARGO", "LONG"] and current > p.reference_price:
+                        p.reference_price = current
+                        updated = True
+                    elif tipo in ["CORTO", "SHORT"] and current < p.reference_price:
+                        p.reference_price = current
+                        updated = True
+            
+            if updated:
+                db.commit()
+                print("INFO: Refresco automático completado y DB actualizada.")
+            
+            db.close()
+
+        except Exception as e:
+            print(f"ERROR en tarea programada: {e}")
+
+# --- ACTUALIZAR EL ARRANQUE DE LA APP ---
+@app.on_event("startup")
+async def startup_event():
+    # Lanzar la tarea en segundo plano sin bloquear el servidor
+    asyncio.create_task(scheduled_market_refresh())
+    
+    # (Su lógica anterior de crear usuario demo...)
+    db = database.SessionLocal()
+    if not db.query(models.User).filter(models.User.id == 1).first():
+        db.add(models.User(id=1, username="inversor_demo", cash_balance=100000.0))
+        db.commit()
+    db.close()
