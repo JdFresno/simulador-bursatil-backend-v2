@@ -38,6 +38,15 @@ MARKETS = {
     "España (IBEX 35)": ["SAN.MC", "ITX.MC", "BBVA.MC", "TEF.MC", "IBE.MC", "REP.MC", "GRF.MC", "AMS.MC"],
     "USA (Tecnología)": ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "NFLX"],
     "Alemania (DAX)": ["BMW.DE", "DAI.DE", "SAP.DE", "ALV.DE", "BAYN.DE", "VOW3.DE"],
+    "ETFs Globales": [
+        "SPY",        # S&P 500 (El más famoso)
+        "QQQ",        # Nasdaq 100
+        "IWM",        # Russell 2000 (Pequeñas empresas USA)
+        "EEM",        # Mercados Emergentes
+        "GLD",        # Oro
+        "VUSA.L",     # S&P 500 en Euros (cotiza en Londres)
+        "EXS1.DE"     # DAX ETF (cotiza en Alemania)
+    ],
     "Cripto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"]
 }
 
