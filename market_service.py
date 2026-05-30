@@ -185,7 +185,7 @@ def is_market_open(exchange: models.Exchange):
     current_time = now.strftime("%H:%M")
     return exchange.open_time <= current_time <= exchange.close_time
     
-def calculate_market_status(exchange: models.Exchange, holidays: list):
+def calculate_market_status(exchange: models.Exchange):
     try:
         tz = pytz.timezone(exchange.timezone)
         now_in_tz = datetime.now(tz)
