@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
 from database import Base
 import datetime
 
@@ -56,7 +56,7 @@ class Exchange(Base):
 class Holiday(Base):
     __tablename__ = "holidays"
     id = Column(Integer, primary_key=True, index=True)
-    exchange_id = Column(Integer, ForeignKey("Exchange.id"))
+    exchange_id = Column(Integer, ForeignKey("exchanges.id"))
     date = Column(String) # Formato "YYYY-MM-DD"
     description = Column(String) # Ej: "Navidad", "Viernes Santo"
 
