@@ -417,3 +417,26 @@ async def startup_event():
         db.add(models.User(id=1, username="inversor_demo", cash_balance=100000.0))
         db.commit()
     db.close()
+
+
+@app.get("/exchanges/details")
+async def get_exchanges_details(db: Session = Depends(get_db)):
+    exchanges = db.query(models.Exchange).all()
+    results = []
+    
+    for ex in exchanges:
+        # Obtenemos festivos de esta bolsa
+        holidays = db.query(models.Holiday).filter(models.Holiday.exchange_id == ex.id).all()
+        
+        status = market_service.calculate_market_status(ex, holidays)
+        
+        results.append({
+            "name": ex.name,
+            "country": ex.country,
+            "open_time": ex.open_time,
+            "close_time": ex.close_time,
+            "timezone": ex.timezone,
+            "status": status,
+            "next_holidays": [{"date": h.date, "desc": h.description} for h in holidays]
+        })
+    return results

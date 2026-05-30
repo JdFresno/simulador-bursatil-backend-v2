@@ -185,21 +185,22 @@ def is_market_open(exchange: models.Exchange):
     current_time = now.strftime("%H:%M")
     return exchange.open_time <= current_time <= exchange.close_time
     
-def calculate_market_status(exchange: models.Exchange):
-    """
-    Calcula si una bolsa está abierta basándose SÓLO en la base de datos.
-    """
+def calculate_market_status(exchange: models.Exchange, holidays: list):
     try:
-        # 1. Ajustar a la zona horaria de la bolsa
         tz = pytz.timezone(exchange.timezone)
         now_in_tz = datetime.now(tz)
+        current_date_str = now_in_tz.strftime("%Y-%m-%d")
         
-        # 2. Verificar día de la semana (0=Lunes, 4=Viernes)
+        # 1. Verificar si hoy es FESTIVO
+        if current_date_str in [h.date for h in holidays]:
+            return "HOLIDAY"
+
+        # 2. Verificar DÍA DE LA SEMANA (L-V)
         current_day = str(now_in_tz.weekday())
         if current_day not in exchange.operating_days.split(","):
             return "CLOSED"
 
-        # 3. Verificar hora (HH:MM)
+        # 3. Verificar HORARIO
         current_time = now_in_tz.strftime("%H:%M")
         if exchange.open_time <= current_time <= exchange.close_time:
             return "OPEN"

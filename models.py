@@ -52,3 +52,13 @@ class Exchange(Base):
     # donde 0=Lunes y 6=Domingo
     operating_days = Column(String, default="0,1,2,3,4") 
     timezone = Column(String, default="Europe/Madrid") # Muy importante para los horarios
+
+class Holiday(Base):
+    __tablename__ = "holidays"
+    id = Column(Integer, primary_key=True, index=True)
+    exchange_id = Column(Integer, ForeignKey("exchanges.id"))
+    date = Column(String) # Formato "YYYY-MM-DD"
+    description = Column(String) # Ej: "Navidad", "Viernes Santo"
+
+
+    
