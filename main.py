@@ -243,7 +243,12 @@ async def close_position(trade: TradeRequest, db: Session = Depends(get_db)):
 
 @app.get("/stocks/markets")
 def get_markets(db: Session = Depends(get_db)):
-    return db.query(models.Exchange).all()
+    # 1. Obtenemos todos los objetos de la base de datos
+    exchanges = db.query(models.Exchange).all()
+    
+    # 2. EXTRAEMOS SOLO EL NOMBRE (String) para que Android no explote
+    # Esto genera una lista de textos: ["Bolsa de Madrid", "NYSE", "XETRA"]
+    return [ex.name for ex in exchanges]
 
 @app.get("/stocks/list/{market_name}")
 async def get_market_stocks(market_name: str):
