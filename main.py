@@ -27,37 +27,61 @@ def get_db():
     finally:
         db.close()
 
-# --- EVENTO DE ARRANQUE UNIFICADO ---
 @app.on_event("startup")
 async def startup_event():
     # 1. Lanzar tarea de refresco por hora en segundo plano
     asyncio.create_task(scheduled_market_refresh())
     
-    # 2. Poblar datos iniciales
+    # 2. Abrir sesión de base de datos
     db = database.SessionLocal()
     try:
-        # Crear usuario maestro
+        # --- A. Crear usuario maestro si no existe ---
         if not db.query(models.User).filter(models.User.id == 1).first():
             db.add(models.User(id=1, username="demo", cash_balance=100000.0))
         
-        # Crear bolsas si no existen
-        if not db.query(models.Exchange).first():
-            markets = [
-                models.Exchange(
-                    name="Bolsa de Madrid", country="España", symbol_suffix=".MC",
-                    mic_code="XMAD", open_time="09:00", close_time="17:30", timezone="Europe/Madrid"
-                ),
-                models.Exchange(
-                    name="NYSE", country="USA", symbol_suffix="",
-                    mic_code="XNYS", open_time="15:30", close_time="22:00", timezone="America/New_York"
-                ),
-                models.Exchange(
-                    name="XETRA", country="Alemania", symbol_suffix=".DE",
-                    mic_code="XETR", open_time="09:00", close_time="17:30", timezone="Europe/Berlin"
-                )
-            ]
-            db.add_all(markets)
+        # --- B. Sincronizar / Crear bolsas de valores ---
+        # Definimos los datos maestros que queremos tener
+        master_markets = [
+            {
+                "name": "Bolsa de Madrid", "country": "España", "suffix": ".MC",
+                "mic": "XMAD", "open": "09:00", "close": "17:30", "tz": "Europe/Madrid"
+            },
+            {
+                "name": "NYSE", "country": "USA", "suffix": "",
+                "mic": "XNYS", "open": "15:30", "close": "22:00", "tz": "America/New_York"
+            },
+            {
+                "name": "XETRA", "country": "Alemania", "suffix": ".DE",
+                "mic": "XETR", "open": "09:00", "close": "17:30", "tz": "Europe/Berlin"
+            }
+        ]
+
+        for market in master_markets:
+            # Buscamos si la bolsa ya existe por su nombre
+            existing_exchange = db.query(models.Exchange).filter(models.Exchange.name == market["name"]).first()
+            
+            if not existing_exchange:
+                # Si no existe, la creamos de cero con el mic_code
+                print(f"INFO: Creando bolsa {market['name']}...")
+                db.add(models.Exchange(
+                    name=market["name"], country=market["country"], 
+                    symbol_suffix=market["suffix"], mic_code=market["mic"], 
+                    open_time=market["open"], close_time=market["close"], 
+                    timezone=market["tz"]
+                ))
+            else:
+                # SI YA EXISTE: Nos aseguramos de que el mic_code esté grabado
+                # Esto arregla el error de las bolsas que se crearon antiguas sin mic_code
+                if not existing_exchange.mic_code:
+                    print(f"INFO: Actualizando mic_code para {market['name']}...")
+                    existing_exchange.mic_code = market["mic"]
+
         db.commit()
+        print("INFO: Sincronización de inicio completada con éxito.")
+
+    except Exception as e:
+        print(f"ERROR en startup_event: {e}")
+        db.rollback()
     finally:
         db.close()
 

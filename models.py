@@ -47,7 +47,7 @@ class Exchange(Base):
     symbol_suffix = Column(String)                 # Ej: ".MC" (para vincular con Yahoo)
     open_time = Column(String)                     # Ej: "09:00"
     close_time = Column(String)                    # Ej: "17:30"
-    
+    mic_code = Column(String)
     # Guardaremos los días como una cadena separada por comas: "0,1,2,3,4" 
     # donde 0=Lunes y 6=Domingo
     operating_days = Column(String, default="0,1,2,3,4") 
