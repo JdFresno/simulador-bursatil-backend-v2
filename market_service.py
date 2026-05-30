@@ -5,6 +5,8 @@ import time
 from datetime import datetime
 import pytz
 import models
+import exchange_calendars as xcals
+import pandas as pd
 
 
 # --- CONFIGURACIÓN DE CACHÉ ---
@@ -185,28 +187,24 @@ def is_market_open(exchange: models.Exchange):
     current_time = now.strftime("%H:%M")
     return exchange.open_time <= current_time <= exchange.close_time
     
-def calculate_market_status(exchange: models.Exchange):
+def calculate_market_status(exchange: models.Exchange): # <-- Solo UN parámetro
     try:
-        tz = pytz.timezone(exchange.timezone)
-        now_in_tz = datetime.now(tz)
-        current_date_str = now_in_tz.strftime("%Y-%m-%d")
-        
-        # 1. Verificar si hoy es FESTIVO
-        if current_date_str in [h.date for h in holidays]:
-            return "HOLIDAY"
-
-        # 2. Verificar DÍA DE LA SEMANA (L-V)
-        current_day = str(now_in_tz.weekday())
-        if current_day not in exchange.operating_days.split(","):
+        if not exchange.mic_code:
             return "CLOSED"
-
-        # 3. Verificar HORARIO
-        current_time = now_in_tz.strftime("%H:%M")
-        if exchange.open_time <= current_time <= exchange.close_time:
-            return "OPEN"
+            
+        calendar = xcals.get_calendar(exchange.mic_code)
+        now_utc = pd.Timestamp.utcnow()
         
+        # exchange_calendars ya sabe si hoy es festivo (is_session)
+        if not calendar.is_session(now_utc.floor("D")):
+            return "HOLIDAY"
+        
+        if calendar.is_open_now():
+            return "OPEN"
+            
         return "CLOSED"
-    except:
+    except Exception as e:
+        print(f"Error en calendario para {exchange.name}: {e}")
         return "CLOSED"
 
 async def get_exchange_by_symbol(db, symbol: str):

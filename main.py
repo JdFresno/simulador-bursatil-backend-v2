@@ -2,40 +2,69 @@ from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 import models, database, market_service
 from pydantic import BaseModel
-from database import engine
 import datetime
 import asyncio
-from contextlib import asynccontextmanager
+import pandas as pd
+import exchange_calendars as xcals
 
+# Inicialización de la base de datos
 models.Base.metadata.create_all(bind=database.engine)
-app = FastAPI()
 
+app = FastAPI(title="Simulador Bursátil API v2")
+
+# --- ESQUEMAS DE DATOS ---
 class TradeRequest(BaseModel):
     user_id: int
     symbol: str
     quantity: int
+    trailing_stop: float = 0.5 # Valor por defecto
 
+# --- DEPENDENCIA DE DB ---
 def get_db():
     db = database.SessionLocal()
-    try: yield db
-    finally: db.close()
+    try:
+        yield db
+    finally:
+        db.close()
 
-@app.post("/trade/short/open")
-async def open_short(trade: TradeRequest, db: Session = Depends(get_db)):
-    price = await market_service.get_live_price(trade.symbol)
-    if not price: raise HTTPException(status_code=404, detail="Símbolo no encontrado")
-    user = db.query(models.User).filter(models.User.id == trade.user_id).first()
-    total_val = price * trade.quantity
-    if user.cash_balance < (total_val * 0.5): raise HTTPException(status_code=400, detail="Margen insuficiente")
+# --- EVENTO DE ARRANQUE UNIFICADO ---
+@app.on_event("startup")
+async def startup_event():
+    # 1. Lanzar tarea de refresco por hora en segundo plano
+    asyncio.create_task(scheduled_market_refresh())
     
-    user.cash_balance += total_val
-    db.add(models.Position(user_id=user.id, symbol=trade.symbol.upper(), quantity=trade.quantity, entry_price=price, margin_locked=total_val*0.5))
-    db.commit()
-    return {"status": "success", "price": price}
+    # 2. Poblar datos iniciales
+    db = database.SessionLocal()
+    try:
+        # Crear usuario maestro
+        if not db.query(models.User).filter(models.User.id == 1).first():
+            db.add(models.User(id=1, username="demo", cash_balance=100000.0))
+        
+        # Crear bolsas si no existen
+        if not db.query(models.Exchange).first():
+            markets = [
+                models.Exchange(
+                    name="Bolsa de Madrid", country="España", symbol_suffix=".MC",
+                    mic_code="XMAD", open_time="09:00", close_time="17:30", timezone="Europe/Madrid"
+                ),
+                models.Exchange(
+                    name="NYSE", country="USA", symbol_suffix="",
+                    mic_code="XNYS", open_time="15:30", close_time="22:00", timezone="America/New_York"
+                ),
+                models.Exchange(
+                    name="XETRA", country="Alemania", symbol_suffix=".DE",
+                    mic_code="XETR", open_time="09:00", close_time="17:30", timezone="Europe/Berlin"
+                )
+            ]
+            db.add_all(markets)
+        db.commit()
+    finally:
+        db.close()
+
+# --- ENDPOINTS DE CARTERA Y SALDOS ---
 
 @app.get("/portfolio/{user_id}")
 async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
-    # 1. Buscar o crear usuario
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if user is None:
         user = models.User(id=user_id, username=f"usuario_{user_id}", cash_balance=100000.0)
@@ -43,80 +72,66 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
 
-    # 2. Obtener posiciones del usuario
     positions = db.query(models.Position).filter(models.Position.user_id == user_id).all()
-    
-    # 3. Preparar símbolos y obtener datos en Batch
     symbols_list = list(set([p.symbol for p in positions]))
     batch_market_data = await market_service.get_batch_quotes(symbols_list)
     
-    # VARIABLES DE AGREGACIÓN SOLICITADAS
-    total_invertido = 0.0
-    ganancias_acumuladas = 0.0
-    perdidas_acumuladas = 0.0
-    valor_actual_total_posiciones = 0.0
-
-    # 4. Pre-cargar bolsas para estado local
     all_exchanges = db.query(models.Exchange).all()
     exchange_map = {ex.symbol_suffix: ex for ex in all_exchanges}
     
-    # --- VARIABLES PARA CÁLCULO DE SALDOS ---
+    # Acumuladores para los 5 saldos
+    total_invested = 0.0
     total_pnl = 0.0
-    positive_pnl_only = 0.0
-    negative_pnl_only = 0.0
+    pos_pnl_only = 0.0
+    neg_pnl_only = 0.0
+    liquidation_value_positions = 0.0
 
     portfolio_data = []
     updated_db = False 
-    
+
     for p in positions:
         data = batch_market_data.get(p.symbol)
         metadata = await market_service.get_metadata_safe(p.symbol) 
 
         if data:
             current = data["current_price"]
-            tipo_limpio = str(p.position_type).strip().upper()
+            tipo = str(p.position_type).strip().upper()
+            
+            # A. Cálculos de patrimonio
+            inversion_inicial = p.entry_price * p.quantity
+            total_invested += inversion_inicial
 
-            principal = p.entry_price * p.quantity
-            total_invertido += principal
+            if tipo in ["LARGO", "LONG"]:
+                pnl = (current - p.entry_price) * p.quantity
+                liq_pos = current * p.quantity
+            else: # CORTO
+                pnl = (p.entry_price - current) * p.quantity
+                liq_pos = - (current * p.quantity) # Deuda
+            
+            total_pnl += pnl
+            liquidation_value_positions += liq_pos
+            if pnl > 0: pos_pnl_only += pnl
+            else: neg_pnl_only += pnl
 
-            # --- CÁLCULO DE PNL INDIVIDUAL ---
-            if tipo_limpio in ["LARGO", "LONG"]:
-                pnl_individual = (current - p.entry_price) * p.quantity
-                valor_posicion = current * p.quantity
-            else: # CORTO / SHORT
-                pnl_individual = (p.entry_price - current) * p.quantity
-                valor_posicion = - (current * p.quantity) 
-
-            valor_actual_total_posiciones += valor_posicion
-
-            # Sumamos a las variables de agregación
-            total_pnl += pnl_individual
-            if pnl_individual > 0:
-                positive_pnl_only += pnl_individual
-                ganancias_acumuladas += pnl_individual
-            else:
-                negative_pnl_only += pnl_individual
-                perdidas_acumuladas += pnl_individual
-
-            # --- LÓGICA DE REFERENCIA DINÁMICA ---
+            # B. Lógica de Referencia y Alerta
             if not p.reference_price or p.reference_price == 0:
                 p.reference_price = p.entry_price
                 updated_db = True
 
-            if tipo_limpio in ["LARGO", "LONG"]:
+            if tipo in ["LARGO", "LONG"]:
                 if current > p.reference_price:
                     p.reference_price = current
                     updated_db = True
                 limit_price = p.reference_price * (1 - (p.trailing_stop_percent / 100))
-                alert_triggered = current <= limit_price
-            else: # CORTO / SHORT
+                alert = current <= limit_price
+            else: # CORTO
                 if current < p.reference_price:
                     p.reference_price = current
                     updated_db = True
                 limit_price = p.reference_price * (1 + (p.trailing_stop_percent / 100))
-                alert_triggered = current >= limit_price
-            
-            # --- ESTADO DE BOLSA ---
+                alert = current >= limit_price
+
+            # C. Estado de Bolsa
             suffix = "." + p.symbol.split(".")[-1] if "." in p.symbol else ""
             ex_info = exchange_map.get(suffix)
             local_status = market_service.calculate_market_status(ex_info) if ex_info else "UNKNOWN"
@@ -124,168 +139,133 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
             portfolio_data.append({
                 "symbol": p.symbol,
                 "name": metadata.get("name", p.symbol),
-                "exchange": metadata.get("exchange", "N/A"),
+                "exchange": ex_info.name if ex_info else "N/A",
                 "market_state": local_status,
                 "quantity": p.quantity,
                 "entry_price": p.entry_price,
                 "reference_price": p.reference_price,
                 "current_price": current,
+                "pnl": round(pnl, 2),
                 "high": data["high"],
                 "low": data["low"],
-                "pnl": round(pnl_individual, 2), # Añadimos el PnL individual por si Android lo necesita
                 "trailing_stop_percent": p.trailing_stop_percent,
                 "stop_price": round(limit_price, 2),
-                "is_alert_active": alert_triggered,
-                "position_type": tipo_limpio,
+                "is_alert_active": alert,
+                "position_type": tipo,
                 "history": data["history"]
             })
             
     if updated_db:
         db.commit()    
             
-    # --- CONSTRUCCIÓN DE LA RESPUESTA CON LOS 4 SALDOS ---
     cash = user.cash_balance
     return {
-        "cash_balance": round(cash, 2),                         # 1. Dinero disponible (PRIORIDAD)
-        "total_invested": round(total_invertido, 2),            # 2. Total Invertido
-        "invested_plus_gains": round(total_invertido + ganancias_acumuladas, 2),
-        "invested_plus_losses": round(total_invertido + perdidas_acumuladas, 2),
-        "total_liquidation": round(cash + valor_actual_total_posiciones, 2), # Patrimonio Neto
+        "cash_balance": round(cash, 2),
+        "total_invested": round(total_invested, 2),
+        "invested_plus_gains": round(total_invested + pos_pnl_only, 2),
+        "invested_plus_losses": round(total_invested + neg_pnl_only, 2),
+        "total_liquidation": round(cash + total_invested + total_pnl, 2),
         "positions": portfolio_data
     }
-        
-@app.get("/")
-def read_root():
-    return {"message": "Servidor funcionando correctamente"}
-    
-@app.get("/")
-async def read_root():
-    return {"status": "ok", "message": "Servidor de Simulación Activo"}
-    
-@app.on_event("startup")
-def startup_populate():
-    db = database.SessionLocal()
-    # Verifica si el usuario 1 existe, si no, lo crea
-    user = db.query(models.User).filter(models.User.id == 1).first()
-    if not user:
-        user = models.User(id=1, username="demo", cash_balance=100000.0)
-        db.add(user)
-        db.commit()
-    db.close()
-    
-    
-@app.post("/trade/short/close")
-async def close_short(trade: TradeRequest, db: Session = Depends(get_db)):
-    # 1. Buscar la posición abierta del usuario
-    pos = db.query(models.Position).filter(
-        models.Position.user_id == trade.user_id,
-        models.Position.symbol == trade.symbol.upper()
-    ).first()
 
-    if not pos:
-        raise HTTPException(status_code=404, detail="No tienes una posición abierta en este valor")
+# --- ENDPOINTS DE OPERACIONES ---
 
-    # 2. Obtener el precio actual de mercado (Yahoo/Twelve)
-    current_price = await market_service.get_live_price(trade.symbol)
-    if not current_price:
-        raise HTTPException(status_code=400, detail="No se pudo obtener el precio para cerrar")
-
-    # 3. Lógica financiera: Compramos las acciones para devolverlas
-    cost_to_cover = current_price * pos.quantity
-    user = db.query(models.User).filter(models.User.id == trade.user_id).first()
-    
-    # Restamos el dinero que nos cuesta recomprar las acciones
-    user.cash_balance -= cost_to_cover
-    
-    # 4. Registrar en el historial y eliminar la posición
-    history = models.TradeHistory(
-        user_id=user.id, symbol=trade.symbol.upper(),
-        op_type="COVER_SHORT", quantity=pos.quantity, price=current_price
-    )
-    
-    db.delete(pos)
-    db.add(history)
-    db.commit()
-    
-    return {"status": "success", "profit_loss": (pos.entry_price - current_price) * pos.quantity}
-    
 @app.post("/trade/long/open")
 async def open_long(trade: TradeRequest, db: Session = Depends(get_db)):
     price = await market_service.get_live_price(trade.symbol)
-    if not price: raise HTTPException(status_code=404, detail="Símbolo no encontrado")
-
+    if not price: raise HTTPException(status_code=404, detail="No disponible")
     user = db.query(models.User).filter(models.User.id == trade.user_id).first()
-    total_cost = price * trade.quantity
-
-    if user.cash_balance < total_cost:
-        raise HTTPException(status_code=400, detail="Saldo insuficiente para comprar")
-
-    # En una COMPRA, restamos el dinero del saldo
-    user.cash_balance -= total_cost
+    cost = price * trade.quantity
+    if user.cash_balance < cost: raise HTTPException(status_code=400, detail="Saldo insuficiente")
     
-    new_pos = models.Position(
-        user_id=user.id, symbol=trade.symbol.upper(),
-        quantity=trade.quantity, entry_price=price,
-        reference_price=price, # Se inicializa igual al de entrada
-        position_type="LONG", # Identificador de compra normal
-        margin_locked=0.0
-    )
-    
-    db.add(new_pos)
+    user.cash_balance -= cost
+    db.add(models.Position(user_id=user.id, symbol=trade.symbol.upper(), quantity=trade.quantity, 
+                           entry_price=price, reference_price=price, position_type="LONG", trailing_stop_percent=0.5))
     db.commit()
-    return {"status": "success", "price": price}
-    
-    
-@app.get("/stocks/markets")
-def get_available_markets():
-    return list(market_service.MARKETS.keys())
+    return {"status": "success"}
 
-@app.get("/stocks/list/{market}")
-async def get_market_stocks(market: str):
-    return await market_service.get_stocks_by_market(market)
+@app.post("/trade/short/open")
+async def open_short(trade: TradeRequest, db: Session = Depends(get_db)):
+    price = await market_service.get_live_price(trade.symbol)
+    if not price: raise HTTPException(status_code=404, detail="No disponible")
+    user = db.query(models.User).filter(models.User.id == trade.user_id).first()
+    val = price * trade.quantity
+    if user.cash_balance < (val * 0.5): raise HTTPException(status_code=400, detail="Margen insuficiente")
     
+    user.cash_balance += val
+    db.add(models.Position(user_id=user.id, symbol=trade.symbol.upper(), quantity=trade.quantity, 
+                           entry_price=price, reference_price=price, position_type="SHORT", margin_locked=val*0.5, trailing_stop_percent=0.5))
+    db.commit()
+    return {"status": "success"}
+
+@app.post("/trade/short/close")
+async def close_position(trade: TradeRequest, db: Session = Depends(get_db)):
+    pos = db.query(models.Position).filter(models.Position.user_id == trade.user_id, models.Position.symbol == trade.symbol.upper()).first()
+    if not pos: raise HTTPException(status_code=404, detail="Sin posición")
     
-MARKETS = {
-    "España (IBEX 35)": ["SAN.MC", "ITX.MC", "BBVA.MC", "TEF.MC"],
-    "USA (Tecnología)": ["AAPL", "TSLA", "NVDA", "MSFT"],
-    "Cripto": ["BTC-USD", "ETH-USD"]
-}
+    current_price = await market_service.get_live_price(trade.symbol)
+    user = db.query(models.User).filter(models.User.id == trade.user_id).first()
+    
+    if pos.position_type in ["LARGO", "LONG"]:
+        user.cash_balance += (current_price * pos.quantity)
+    else:
+        user.cash_balance -= (current_price * pos.quantity)
+    
+    db.delete(pos)
+    db.commit()
+    return {"status": "success"}
+
+# --- ENDPOINTS DE MERCADOS Y BÚSQUEDA ---
 
 @app.get("/stocks/markets")
-def get_available_markets():
-    # Esto devuelve ["España (IBEX 35)", "USA (Tecnología)", "Cripto"]
-    return list(MARKETS.keys())
-    
-    
+def get_markets(db: Session = Depends(get_db)):
+    return db.query(models.Exchange).all()
+
+@app.get("/stocks/list/{market_name}")
+async def get_market_stocks(market_name: str):
+    # Usamos las listas de símbolos predefinidas en market_service
+    return await market_service.get_stocks_by_market(market_name)
+
 @app.get("/stocks/search")
 async def search(query: str):
     return await market_service.search_stocks(query)
 
-@app.post("/favorites/add")
-def add_favorite(user_id: int, symbol: str, name: str, exchange: str, db: Session = Depends(get_db)):
-    # Evitar duplicados
-    exists = db.query(models.Favorite).filter(models.Favorite.user_id == user_id, models.Favorite.symbol == symbol).first()
-    if not exists:
-        new_fav = models.Favorite(user_id=user_id, symbol=symbol, name=name, exchange=exchange)
-        db.add(new_fav)
-        db.commit()
-    return {"status": "success"}
-  
+@app.get("/exchanges/details")
+async def get_exchanges_details(db: Session = Depends(get_db)):
+    exchanges = db.query(models.Exchange).all()
+    results = []
+    for ex in exchanges:
+        status = market_service.calculate_market_status(ex)
+        # Obtenemos festivos automáticamente de la librería exchange_calendars
+        try:
+            cal = xcals.get_calendar(ex.mic_code)
+            hols = [{"date": h.strftime("%Y-%m-%d"), "desc": "Festivo oficial"} 
+                    for h in cal.adhoc_holidays if h.year == datetime.datetime.now().year][:3]
+        except: hols = []
+
+        results.append({
+            "name": ex.name, "country": ex.country, "open_time": ex.open_time,
+            "close_time": ex.close_time, "timezone": ex.timezone, "status": status,
+            "next_holidays": hols
+        })
+    return results
+
+# --- FAVORITOS ---
 @app.get("/favorites/{user_id}")
 async def get_favorites(user_id: int, db: Session = Depends(get_db)):
     favs = db.query(models.Favorite).filter(models.Favorite.user_id == user_id).all()
     results = []
     for f in favs:
-        # Obtenemos el precio en vivo para cada favorito
         price = await market_service.get_live_price(f.symbol)
-        results.append({
-            "id": f.id, # Necesario para poder borrarlo
-            "symbol": f.symbol,
-            "name": f.name,
-            "exchange": f.exchange,
-            "price": price or 0.0
-        })
+        results.append({"id": f.id, "symbol": f.symbol, "name": f.name, "exchange": f.exchange, "price": price or 0.0})
     return results
+
+@app.post("/favorites/add")
+def add_favorite(user_id: int, symbol: str, name: str, exchange: str, db: Session = Depends(get_db)):
+    if not db.query(models.Favorite).filter(models.Favorite.user_id == user_id, models.Favorite.symbol == symbol).first():
+        db.add(models.Favorite(user_id=user_id, symbol=symbol, name=name, exchange=exchange))
+        db.commit()
+    return {"status": "success"}
 
 @app.delete("/favorites/{fav_id}")
 def delete_favorite(fav_id: int, db: Session = Depends(get_db)):
@@ -294,149 +274,33 @@ def delete_favorite(fav_id: int, db: Session = Depends(get_db)):
         db.delete(fav)
         db.commit()
         return {"status": "deleted"}
-    raise HTTPException(status_code=404, detail="No encontrado")
-    
+    return {"status": "not_found"}
+
+# --- UTILIDADES ---
 @app.get("/ping")
 async def ping():
-    """
-    Endpoint simple para verificar la salud del servidor.
-    Devuelve el estado y la hora actual del servidor.
-    """
-    return {
-        "status": "online",
-        "message": "pong",
-        "server_time": datetime.datetime.utcnow().isoformat(),
-        "version": "1.0.0"
-    }
-    
-@app.on_event("startup")
-def startup_populate():
-    db = database.SessionLocal()
-    try:
-        # 1. Crear usuario demo si no existe (ya lo teníamos)
-        if not db.query(models.User).filter(models.User.id == 1).first():
-            db.add(models.User(id=1, username="inversor_demo", cash_balance=100000.0))
+    return {"status": "online", "server_time": datetime.datetime.utcnow().isoformat()}
 
-        # 2. Crear bolsas de valores si la tabla está vacía
-        if not db.query(models.Exchange).first():
-            markets = [
-                models.Exchange(
-                    name="Bolsa de Madrid", country="España", symbol_suffix=".MC",
-                    open_time="09:00", close_time="17:30", operating_days="0,1,2,3,4",
-                    timezone="Europe/Madrid"
-                ),
-                models.Exchange(
-                    name="NYSE", country="USA", symbol_suffix="",
-                    open_time="09:30", close_time="16:00", operating_days="0,1,2,3,4",
-                    timezone="America/New_York"
-                ),
-                models.Exchange(
-                    name="XETRA", country="Alemania", symbol_suffix=".DE",
-                    open_time="09:00", close_time="17:30", operating_days="0,1,2,3,4",
-                    timezone="Europe/Berlin"
-                )
-            ]
-            db.add_all(markets)
-            db.commit()
-    finally:
-        db.close()
-        
-@app.get("/stocks/status/{exchange_id}")
-async def get_status(exchange_id: int, db: Session = Depends(get_db)):
-    exchange = db.query(models.Exchange).filter(models.Exchange.id == exchange_id).first()
-    if not exchange:
-        return {"error": "Bolsa no encontrada"}
-    
-    # Llamamos a la función que acabamos de crear en el otro fichero
-    abierto = market_service.is_market_open(exchange)
-    
-    return {
-        "exchange": exchange.name,
-        "is_open": abierto
-    }
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Backend Simulador Activo"}
 
-# --- FUNCIÓN DE TAREA EN SEGUNDO PLANO ---
+# --- TAREA PROGRAMADA ---
 async def scheduled_market_refresh():
-    """
-    Bucle infinito que recorre todas las posiciones de la base de datos
-    y actualiza sus valores cada hora.
-    """
     while True:
+        await asyncio.sleep(3600)
+        db = database.SessionLocal()
         try:
-            # Esperar 1 hora (3600 segundos)
-            # Nota: Al arrancar, espera primero la hora. 
-            # Si quiere que refresque nada más encender, mueva el sleep al final.
-            await asyncio.sleep(3600) 
-            
-            print("INFO: Iniciando refresco automático por hora...")
-            db = database.SessionLocal()
-            
-            # 1. Obtener todas las posiciones de TODOS los usuarios
-            all_positions = db.query(models.Position).all()
-            if not all_positions:
-                db.close()
-                continue
-
-            # 2. Obtener precios en Batch (para no saturar Yahoo)
-            symbols = list(set([p.symbol for p in all_positions]))
-            batch_data = await market_service.get_batch_quotes(symbols)
-
-            updated = False
-            for p in all_positions:
-                data = batch_data.get(p.symbol)
+            positions = db.query(models.Position).all()
+            symbols = list(set([p.symbol for p in positions]))
+            batch = await market_service.get_batch_quotes(symbols)
+            for p in positions:
+                data = batch.get(p.symbol)
                 if data:
-                    current = data["current_price"]
+                    curr = data["current_price"]
                     tipo = str(p.position_type).strip().upper()
-
-                    # 3. Actualizar Referencia (Peak/Trough)
-                    if tipo in ["LARGO", "LONG"] and current > p.reference_price:
-                        p.reference_price = current
-                        updated = True
-                    elif tipo in ["CORTO", "SHORT"] and current < p.reference_price:
-                        p.reference_price = current
-                        updated = True
-            
-            if updated:
-                db.commit()
-                print("INFO: Refresco automático completado y DB actualizada.")
-            
-            db.close()
-
-        except Exception as e:
-            print(f"ERROR en tarea programada: {e}")
-
-# --- ACTUALIZAR EL ARRANQUE DE LA APP ---
-@app.on_event("startup")
-async def startup_event():
-    # Lanzar la tarea en segundo plano sin bloquear el servidor
-    asyncio.create_task(scheduled_market_refresh())
-    
-    # (Su lógica anterior de crear usuario demo...)
-    db = database.SessionLocal()
-    if not db.query(models.User).filter(models.User.id == 1).first():
-        db.add(models.User(id=1, username="inversor_demo", cash_balance=100000.0))
-        db.commit()
-    db.close()
-
-
-@app.get("/exchanges/details")
-async def get_exchanges_details(db: Session = Depends(get_db)):
-    exchanges = db.query(models.Exchange).all()
-    results = []
-    
-    for ex in exchanges:
-        # Obtenemos festivos de esta bolsa
-        holidays = db.query(models.Holiday).filter(models.Holiday.exchange_id == ex.id).all()
-        
-        status = market_service.calculate_market_status(ex, holidays)
-        
-        results.append({
-            "name": ex.name,
-            "country": ex.country,
-            "open_time": ex.open_time,
-            "close_time": ex.close_time,
-            "timezone": ex.timezone,
-            "status": status,
-            "next_holidays": [{"date": h.date, "desc": h.description} for h in holidays]
-        })
-    return results
+                    if tipo in ["LONG", "LARGO"] and curr > p.reference_price: p.reference_price = curr
+                    elif tipo in ["SHORT", "CORTO"] and curr < p.reference_price: p.reference_price = curr
+            db.commit()
+        except: pass
+        finally: db.close()
