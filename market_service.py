@@ -12,7 +12,9 @@ import pandas as pd
 # --- CONFIGURACIÓN DE CACHÉ ---
 # Guardaremos los datos así: { "AAPL": {"timestamp": 1234567, "data": {...}}, ... }
 _cache = {}
+_stock_cache = {}
 # Tiempo en segundos para considerar los datos como "frescos" (120 seg = 2 min)
+CACHE_TIME = 120
 CACHE_DURATION = 600 
 TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_KEY")
 # Diccionario para nombres y bolsas (Caché de larga duración)
