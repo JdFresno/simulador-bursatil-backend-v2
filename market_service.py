@@ -11,7 +11,7 @@ import pandas as pd
 
 # --- CONFIGURACIÓN DE CACHÉ ---
 # Guardaremos los datos así: { "AAPL": {"timestamp": 1234567, "data": {...}}, ... }
-_stock_cache = {}
+_cache = {}
 # Tiempo en segundos para considerar los datos como "frescos" (120 seg = 2 min)
 CACHE_DURATION = 600 
 TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_KEY")
@@ -96,52 +96,66 @@ async def get_history_data(symbol: str):
     except:
         return []
     return []
-    
-async def get_full_quote(symbol: str):
-    now = time.time()
-    symbol = symbol.upper()
 
-    # 1. Comprobar Caché
-    if symbol in _stock_cache:
-        entry = _stock_cache[symbol]
-        if now - entry["timestamp"] < CACHE_DURATION:
+async def get_full_quote(symbol: str):
+    symbol = symbol.upper()
+    now = time.time()
+
+    # 1. Mirar si tenemos el dato en memoria (Caché)
+    if symbol in _cache:
+        entry = _cache[symbol]
+        if now - entry["timestamp"] < CACHE_TIME:
             return entry["data"]
 
-    # 2. INTENTO CON TWELVE DATA (Fuente Principal)
+    # 2. Intentar con TWELVE DATA (Prioridad 1 para evitar 429)
     if TWELVE_DATA_KEY:
         try:
-            # Pedimos quote (precios y estado) y time_series (gráfica)
-            # Nota: Agrupamos para intentar ahorrar créditos
+            url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_DATA_KEY}"
             async with httpx.AsyncClient() as client:
-                # Obtenemos precio actual y metadatos
-                quote_url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_DATA_KEY}"
-                # Obtenemos serie histórica para la gráfica (intervalo 15m)
-                series_url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=15min&outputsize=20&apikey={TWELVE_DATA_KEY}"
-                
-                quote_resp = await client.get(quote_url)
-                series_resp = await client.get(series_url)
-                
-                q_data = quote_resp.json()
-                s_data = series_resp.json()
+                resp = await client.get(url, timeout=5)
+                if resp.status_code == 200:
+                    d = resp.json()
+                    if "price" in d or "close" in d:
+                        data = {
+                            "current_price": float(d.get("close") or d.get("price")),
+                            "high": float(d.get("high") or 0),
+                            "low": float(d.get("low") or 0),
+                            "name": d.get("name", symbol),
+                            "exchange": d.get("exchange", "N/A"),
+                            "market_state": "OPEN" if d.get("is_market_open") else "CLOSED",
+                            "history": [] # Twelve Data requiere otra petición para historia
+                        }
+                        _cache[symbol] = {"data": data, "timestamp": now}
+                        return data
+        except:
+            pass # Si Twelve falla, saltamos a Yahoo
 
-                if "price" in q_data or "close" in q_data:
-                    # Mapeo de Twelve Data a nuestro formato
-                    res_data = {
-                        "current_price": round(float(q_data.get("close") or q_data.get("price")), 2),
-                        "high": round(float(q_data.get("high")), 2),
-                        "low": round(float(q_data.get("low")), 2),
-                        "name": q_data.get("name") or symbol,
-                        "exchange": q_data.get("exchange") or "N/A",
-                        "market_state": "OPEN" if q_data.get("is_market_open") else "CLOSED",
-                        "history": [round(float(x["close"]), 2) for x in s_data.get("values", [])][::-1] # Invertimos para que sea cronológico
-                    }
-                    save_to_cache(symbol, res_data)
-                    return res_data
-        except Exception as e:
-            print(f"Twelve Data falló o límite alcanzado para {symbol}, probando Yahoo...")
+    # 3. Intentar con YAHOO FINANCE (Respaldo)
+    try:
+        ticker = yf.Ticker(symbol)
+        # Usamos fast_info que es menos propenso a bloqueos que .info
+        hist = ticker.history(period="1d", interval="15m")
+        
+        if not hist.empty:
+            res = {
+                "current_price": round(float(hist['Close'].iloc[-1]), 2),
+                "high": round(float(hist['High'].max()), 2),
+                "low": round(float(hist['Low'].min()), 2),
+                "name": symbol, # Simplificamos para no llamar a .info (que da el 429)
+                "exchange": "Market",
+                "market_state": "OPEN",
+                "history": [round(float(p), 2) for p in hist['Close'].tolist()]
+            }
+            _cache[symbol] = {"data": res, "timestamp": now}
+            return res
+    except Exception as e:
+        print(f"ALERTA: Yahoo bloqueado (429). Usando datos antiguos de caché para {symbol}")
 
-    # 3. RESPALDO CON YAHOO FINANCE (Si Twelve Data falla o no hay clave)
-    return await get_yahoo_fallback(symbol)   
+    # 4. ÚLTIMO RECURSO: Si todo falla, devolver lo que sea que haya en caché aunque sea viejo
+    if symbol in _cache:
+        return _cache[symbol]["data"]
+    
+    return None 
 
 async def get_yahoo_fallback(symbol: str):
     try:
