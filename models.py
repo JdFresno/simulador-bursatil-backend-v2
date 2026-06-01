@@ -60,4 +60,8 @@ class Holiday(Base):
     date = Column(String) # Formato "YYYY-MM-DD"
     description = Column(String) # Ej: "Navidad", "Viernes Santo"
 
-
+class AssetMetadata(Base):
+    __tablename__ = "asset_metadata"
+    symbol = Column(String, primary_key=True, index=True) # AAPL, SAN.MC
+    name = Column(String)
+    exchange = Column(String)

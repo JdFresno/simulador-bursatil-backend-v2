@@ -7,6 +7,7 @@ import pytz
 import models
 import exchange_calendars as xcals
 import pandas as pd
+from sqlalchemy.orm import Session
 
 
 # --- CONFIGURACIÓN DE CACHÉ ---
@@ -337,3 +338,34 @@ async def get_metadata_safe(symbol: str):
         return meta
     except:
         return {"name": symbol, "exchange": "N/A"}
+    
+
+async def get_metadata_db(db: Session, symbol: str):
+    symbol = symbol.upper()
+    
+    # 1. Intentar buscar en nuestra base de datos
+    meta = db.query(models.AssetMetadata).filter(models.AssetMetadata.symbol == symbol).first()
+    if meta:
+        return {"name": meta.name, "exchange": meta.exchange}
+
+    # 2. Si no existe en DB, lo buscamos en Twelve Data (que no bloquea IP)
+    # y lo guardamos para siempre
+    try:
+        print(f"DEBUG: Guardando metadatos nuevos para {symbol}")
+        url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={TWELVE_DATA_KEY}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, timeout=5)
+            if resp.status_code == 200:
+                d = resp.json()
+                name = d.get("name", symbol)
+                exch = d.get("exchange", "Market")
+                
+                # Guardamos en Neon.tech
+                new_meta = models.AssetMetadata(symbol=symbol, name=name, exchange=exch)
+                db.add(new_meta)
+                return {"name": name, "exchange": exch}
+    except:
+        pass
+
+    # 3. Fallback: Si todo falla, usamos el símbolo como nombre temporal
+    return {"name": symbol, "exchange": "Bolsa"}

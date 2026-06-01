@@ -89,6 +89,7 @@ async def startup_event():
 
 @app.get("/portfolio/{user_id}")
 async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
+    # 1. Buscar o crear usuario
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if user is None:
         user = models.User(id=user_id, username=f"usuario_{user_id}", cash_balance=100000.0)
@@ -96,48 +97,52 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
 
+    # 2. Obtener posiciones del usuario
     positions = db.query(models.Position).filter(models.Position.user_id == user_id).all()
+    
+    # 3. PETICIÓN ÚNICA AL MERCADO (Batch) para todos los precios y gráficas
     symbols_list = list(set([p.symbol for p in positions]))
     batch_market_data = await market_service.get_batch_quotes(symbols_list)
     
+    # 4. PRE-CARGAR LAS BOLSAS para calcular el estado localmente
     all_exchanges = db.query(models.Exchange).all()
     exchange_map = {ex.symbol_suffix: ex for ex in all_exchanges}
     
-    # Acumuladores para los 5 saldos
+    # Acumuladores para los 5 saldos solicitados
     total_invested = 0.0
     total_pnl = 0.0
     pos_pnl_only = 0.0
     neg_pnl_only = 0.0
-    liquidation_value_positions = 0.0
 
     portfolio_data = []
     updated_db = False 
 
     for p in positions:
+        # A. Datos Dinámicos: Precios y Historia (Vienen del Batch de Yahoo)
         data = batch_market_data.get(p.symbol)
-        metadata = await market_service.get_metadata_safe(p.symbol) 
-
+        
+        # B. Datos Estáticos: Nombre y Bolsa (Vienen de nuestra BBDD AssetMetadata)
+        # Esta función busca en Neon; si no existe, busca en TwelveData UNA VEZ y guarda
+        metadata = await market_service.get_metadata_db(db, p.symbol)
+        db.commit()
         if data:
             current = data["current_price"]
             tipo = str(p.position_type).strip().upper()
             
-            # A. Cálculos de patrimonio
+            # --- CÁLCULOS DE PATRIMONIO ---
             inversion_inicial = p.entry_price * p.quantity
             total_invested += inversion_inicial
 
             if tipo in ["LARGO", "LONG"]:
                 pnl = (current - p.entry_price) * p.quantity
-                liq_pos = current * p.quantity
-            else: # CORTO
+            else: # CORTO / SHORT
                 pnl = (p.entry_price - current) * p.quantity
-                liq_pos = - (current * p.quantity) # Deuda
             
             total_pnl += pnl
-            liquidation_value_positions += liq_pos
             if pnl > 0: pos_pnl_only += pnl
             else: neg_pnl_only += pnl
 
-            # B. Lógica de Referencia y Alerta
+            # --- LÓGICA DE REFERENCIA DINÁMICA ---
             if not p.reference_price or p.reference_price == 0:
                 p.reference_price = p.entry_price
                 updated_db = True
@@ -148,14 +153,14 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
                     updated_db = True
                 limit_price = p.reference_price * (1 - (p.trailing_stop_percent / 100))
                 alert = current <= limit_price
-            else: # CORTO
+            else: # CORTO / SHORT
                 if current < p.reference_price:
                     p.reference_price = current
                     updated_db = True
                 limit_price = p.reference_price * (1 + (p.trailing_stop_percent / 100))
                 alert = current >= limit_price
 
-            # C. Estado de Bolsa
+            # --- CÁLCULO LOCAL DEL ESTADO DE LA BOLSA ---
             suffix = "." + p.symbol.split(".")[-1] if "." in p.symbol else ""
             ex_info = exchange_map.get(suffix)
             local_status = market_service.calculate_market_status(ex_info) if ex_info else "UNKNOWN"
@@ -182,13 +187,14 @@ async def get_portfolio(user_id: int, db: Session = Depends(get_db)):
     if updated_db:
         db.commit()    
             
+    # --- RESPUESTA CON LOS 5 SALDOS ---
     cash = user.cash_balance
     return {
-        "cash_balance": round(cash, 2),
-        "total_invested": round(total_invested, 2),
-        "invested_plus_gains": round(total_invested + pos_pnl_only, 2),
-        "invested_plus_losses": round(total_invested + neg_pnl_only, 2),
-        "total_liquidation": round(cash + total_invested + total_pnl, 2),
+        "cash_balance": round(cash, 2),                                   # 1. Dinero disponible
+        "total_invested": round(total_invested, 2),                      # 2. Total Invertido
+        "invested_plus_gains": round(total_invested + pos_pnl_only, 2),  # 3. Invertido + ganancias
+        "invested_plus_losses": round(total_invested + neg_pnl_only, 2), # 4. Invertido + pérdidas
+        "total_liquidation": round(cash + total_invested + total_pnl, 2), # 5. Total Liquidación (Neto)
         "positions": portfolio_data
     }
 
