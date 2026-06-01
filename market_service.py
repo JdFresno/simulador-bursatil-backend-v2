@@ -187,26 +187,37 @@ def is_market_open(exchange: models.Exchange):
     current_time = now.strftime("%H:%M")
     return exchange.open_time <= current_time <= exchange.close_time
     
-def calculate_market_status(exchange: models.Exchange): # <-- Solo UN parámetro
+import pandas as pd
+import exchange_calendars as xcals
+
+def calculate_market_status(exchange: models.Exchange):
     try:
-        if not exchange.mic_code:
-            return "CLOSED"
-            
+        if not exchange or not hasattr(exchange, 'mic_code') or not exchange.mic_code:
+            return "UNKNOWN"
+
+        # Obtenemos el calendario
         calendar = xcals.get_calendar(exchange.mic_code)
-        now_utc = pd.Timestamp.utcnow()
         
-        # exchange_calendars ya sabe si hoy es festivo (is_session)
-        if not calendar.is_session(now_utc.floor("D")):
+        # --- CORRECCIÓN CRÍTICA ---
+        # En lugar de usar utcnow() o is_open_now(), usamos un Timestamp 
+        # localizado explícitamente para evitar el error del atributo '.key'
+        ahora_utc = pd.Timestamp.now(tz='UTC')
+        
+        # 1. ¿Es día de sesión?
+        if not calendar.is_session(ahora_utc.floor("D")):
             return "HOLIDAY"
         
-        if calendar.is_open_now():
-            return "OPEN"
-            
-        return "CLOSED"
+        # 2. ¿Está abierta? 
+        # Usamos 'is_open_on_minute' que es más estable que 'is_open_now'
+        esta_abierta = calendar.is_open_on_minute(ahora_utc)
+        
+        return "OPEN" if esta_abierta else "CLOSED"
+
     except Exception as e:
+        # Esto es lo que veía en sus logs
         print(f"Error en calendario para {exchange.name}: {e}")
         return "CLOSED"
-
+    
 async def get_exchange_by_symbol(db, symbol: str):
     """
     Identifica a qué bolsa pertenece un símbolo por su sufijo.

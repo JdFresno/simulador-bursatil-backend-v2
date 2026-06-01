@@ -1,9 +1,10 @@
 fastapi
 uvicorn
 sqlalchemy
-yfinance
-httpx
 psycopg2-binary
-twelvedata
+yfinance==0.2.40
+pandas==2.2.2
+exchange_calendars==4.5.5
 pytz
-exchange_calendars
+httpx
+twelvedata
